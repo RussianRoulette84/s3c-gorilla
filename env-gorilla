@@ -1,0 +1,156 @@
+#!/bin/bash
+##########################################################################################
+## env-gorilla - inject .env secrets from KeePassXC into any process
+## Part of s3c-gorilla — Touch ID powered, manual password fallback
+##
+## Usage:
+##   env-gorilla <project> -- <command>
+##   env-gorilla project_x -- uvicorn src.api.app:app --reload --port 8000
+##   env-gorilla --list                    # show available projects
+##   env-gorilla --setup                   # store master password with Touch ID
+##   env-gorilla --remove                  # remove stored master password
+##########################################################################################
+
+GORILLA_DB="$HOME/Library/Mobile Documents/com~apple~CloudDocs/db.kdbx"
+GORILLA_TOUCHID="$HOME/bin/gorilla-touchid"
+
+# ----------------------------------------------------------
+# Commands
+# ----------------------------------------------------------
+if [[ "$1" == "--setup" ]]; then
+    "$GORILLA_TOUCHID" store
+    exit $?
+fi
+
+if [[ "$1" == "--remove" ]]; then
+    "$GORILLA_TOUCHID" delete
+    exit $?
+fi
+
+if [[ "$1" == "--list" ]]; then
+    echo "🦍 Available projects:"
+    GORILLA_PW=$("$GORILLA_TOUCHID" 2>/dev/null)
+    if [[ -z "$GORILLA_PW" ]]; then
+        read -s -p "🔐 Master password: " GORILLA_PW
+        echo ""
+    fi
+    echo "$GORILLA_PW" | keepassxc-cli ls "$GORILLA_DB" "ENV/" -q 2>/dev/null
+    unset GORILLA_PW
+    exit 0
+fi
+
+# ----------------------------------------------------------
+# Usage check
+# ----------------------------------------------------------
+if [[ $# -lt 3 || "$*" != *" -- "* ]]; then
+    cat << 'EOF'
+🦍 env-gorilla - secrets from the vault, not from the disk
+
+Usage:
+  env-gorilla <project> -- <command>
+  env-gorilla --list                    Show available projects
+  env-gorilla --setup                   Store master password (Touch ID)
+  env-gorilla --remove                  Remove stored master password
+
+Examples:
+  env-gorilla project_x -- python main.py
+  env-gorilla project_y -- npm run dev
+  env-gorilla project_z -- uvicorn src.api.app:app --reload
+EOF
+    exit 1
+fi
+
+# ----------------------------------------------------------
+# Parse args
+# ----------------------------------------------------------
+PROJECT="$1"
+shift
+while [[ "$1" != "--" ]]; do shift; done
+shift
+
+# ----------------------------------------------------------
+# Get password: Touch ID first, fallback to manual
+# ----------------------------------------------------------
+get_password() {
+    local pw
+    pw=$("$GORILLA_TOUCHID" 2>/dev/null)
+    if [[ $? -eq 0 && -n "$pw" ]]; then
+        echo "$pw"
+        return 0
+    fi
+    read -s -p "🔐 Master password (Touch ID unavailable): " pw
+    echo "" >&2
+    echo "$pw"
+}
+
+# ----------------------------------------------------------
+# Check KeePassXC is unlocked (for SSH agent), prompt if not
+# ----------------------------------------------------------
+if ! ssh-add -l &>/dev/null; then
+    cat << 'EOF' | ~/bin/colorize.sh -s 1 -e 11
+  /$$$$$$   /$$$$$$  /$$   /$$        /$$$$$$   /$$$$$$  /$$$$$$$  /$$$$$$ /$$       /$$        /$$$$$$
+ /$$__  $$ /$$__  $$| $$  | $$       /$$__  $$ /$$__  $$| $$__  $$|_  $$_/| $$      | $$       /$$__  $$
+| $$  \__/| $$  \__/| $$  | $$      | $$  \__/| $$  \ $$| $$  \ $$  | $$  | $$      | $$      | $$  \ $$
+|  $$$$$$ |  $$$$$$ | $$$$$$$$      | $$ /$$$$| $$  | $$| $$$$$$$/  | $$  | $$      | $$      | $$$$$$$$
+ \____  $$ \____  $$| $$__  $$      | $$|_  $$| $$  | $$| $$__  $$  | $$  | $$      | $$      | $$__  $$
+ /$$  \ $$ /$$  \ $$| $$  | $$      | $$  \ $$| $$  | $$| $$  \ $$  | $$  | $$      | $$      | $$  | $$
+|  $$$$$$/|  $$$$$$/| $$  | $$      |  $$$$$$/|  $$$$$$/| $$  | $$ /$$$$$$| $$$$$$$$| $$$$$$$$| $$  | $$
+ \______/  \______/ |__/  |__/       \______/  \______/ |__/  |__/|______/|________/|________/|__/  |__/
+EOF
+    echo ""
+    open -a KeePassXC
+    echo "⏳ Unlock KeePassXC for SSH agent..."
+    attempts=0
+    while ! ssh-add -l &>/dev/null; do
+        if [[ $attempts -lt 5 ]]; then
+            osascript -e 'tell application "KeePassXC" to activate' -e 'delay 0.3' -e 'tell application "System Events" to keystroke return' &>/dev/null
+            ((attempts++))
+        fi
+        sleep 1
+    done
+fi
+
+# ----------------------------------------------------------
+# Extract .env from KeePassXC via Touch ID
+# ----------------------------------------------------------
+cat << 'EOF' | ~/bin/colorize.sh -s 1 -e 11
+ /$$$$$$  /$$$$$$$$  /$$$$$$         /$$$$$$   /$$$$$$  /$$$$$$$  /$$$$$$ /$$       /$$        /$$$$$$
+| $$__  $$| $$_____/ /$$__  $$       /$$__  $$ /$$__  $$| $$__  $$|_  $$_/| $$      | $$       /$$__  $$
+| $$  \__/| $$      | $$  \__/      | $$  \__/| $$  \ $$| $$  \ $$  | $$  | $$      | $$      | $$  \ $$
+|  $$$$$$ | $$$$$   | $$            | $$ /$$$$| $$  | $$| $$$$$$$/  | $$  | $$      | $$      | $$$$$$$$
+ \____  $$| $$__/   | $$            | $$|_  $$| $$  | $$| $$__  $$  | $$  | $$      | $$      | $$__  $$
+ /$$  \ $$| $$      | $$    $$      | $$  \ $$| $$  | $$| $$  \ $$  | $$  | $$      | $$      | $$  | $$
+|  $$$$$$/| $$$$$$$$|  $$$$$$/      |  $$$$$$/|  $$$$$$/| $$  | $$ /$$$$$$| $$$$$$$$| $$$$$$$$| $$  | $$
+ \______/ |________/ \______/        \______/  \______/ |__/  |__/|______/|________/|________/|__/  |__/
+
+    env-gorilla — secrets from the vault, not from the disk
+EOF
+echo ""
+echo "🦍 Injecting ENV/$PROJECT secrets..."
+
+GORILLA_PW=$(get_password)
+
+ENV_DATA=$(echo "$GORILLA_PW" | keepassxc-cli attachment-export "$GORILLA_DB" "ENV/$PROJECT" .env --stdout -q 2>/dev/null)
+EXIT_CODE=$?
+
+unset GORILLA_PW
+
+if [[ $EXIT_CODE -ne 0 || -z "$ENV_DATA" ]]; then
+    echo "❌ Failed to extract .env for $PROJECT"
+    echo "   Check that ENV/$PROJECT exists with a .env attachment"
+    echo "   Run: env-gorilla --setup  (if Touch ID isn't configured)"
+    exit 1
+fi
+
+# ----------------------------------------------------------
+# Parse .env and export into environment
+# ----------------------------------------------------------
+while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+    export "$line"
+done <<< "$ENV_DATA"
+
+unset ENV_DATA
+
+echo "✅ $PROJECT secrets loaded — launching: $*"
+exec "$@"

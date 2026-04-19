@@ -1,0 +1,57 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "🦍 FastAPI",
+      "type": "shell",
+      "command": "env-gorilla slav_ai -- python -m debugpy --listen 5678 --wait-for-client -m uvicorn src.api.app:app --reload --port 8000",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "uvicorn",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Application startup complete",
+        },
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+      },
+      "options": {
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          "DEBUG": "True",
+          "VERBOSE": "True",
+        },
+      },
+    },
+    {
+      "label": "🦍 Vite",
+      "type": "shell",
+      "command": "env-gorilla slav_ai -- npm run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "fileLocation": ["absolute"],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE",
+          "endsPattern": "ready in",
+        },
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4,
+        },
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+      },
+    },
+  ],
+}
