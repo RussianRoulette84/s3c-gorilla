@@ -24,14 +24,16 @@ It's called `KeePassXC` where you can attach files into DB and it has SSH Agent 
 
 It's built on top of `KeePassXC` and it includes 4 things to solve this problem securely and effortlessly!
 
-With the help of `osascript` + `Apple TouchID` here is the setup we you will have:
+With the help of `osascript` + `Apple TouchID` here is the setup you will have:
 
+```
 You boot macOS
   → SSH or run a project that needs secrets
     → KeePassXC opens → type master password once
       → SSH works, env-gorilla injects secrets
         → lock screen / close lid → Touch ID to resume
           → repeat until reboot or quit KeePassXC
+```
 
 - **Is is convenient?** Yes, using `TouchID` + `osascripts` makes everything effortless. 
   - Drop the password DB file into iCloud folder and `sync` is solved by Apple. 
