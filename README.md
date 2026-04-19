@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-0.9-green.svg)
+![Version](https://img.shields.io/badge/version-0.10-green.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![macOS](https://img.shields.io/badge/macOS-12%2B-black?logo=apple&logoColor=white)
 ![KeePassXC](https://img.shields.io/badge/KeePassXC-2.7%2B-69A626?logo=keepassxc&logoColor=white)
@@ -10,6 +10,8 @@
 
 # s3c-gorilla
 
+**Secrets from the vault, not from the disk** — a macOS toolkit that eliminates plaintext SSH keys and `.env` files by injecting secrets from an encrypted KeePassXC database into memory at runtime, with Touch ID.
+
 These days coding with LLMs is increasingly dangerous. Mostly when you have tons of `.env` files, SSH credentials stored on your hard drive to run things locally.
 
 So the Germans started writing a password manager back in 2017. Even the French approved it. 10 guys keep supporting it till this day.
@@ -18,11 +20,11 @@ It's called `KeePassXC` where you can attach files into DB and it has SSH Agent 
 
 **What it means for you:** no more sensitive files stored on your hard drive openly. One encrypted file stores secrets. Great!
 
--- 
+--
 
 ## So whats `s3c-gorilla` then?
 
-It's built on top of `KeePassXC` and it includes 4 things to solve this problem securely and effortlessly!
+It's built on top of `KeePassXC` and it includes 5 tools to solve this problem securely and effortlessly!
 
 With the help of `osascript` + `Apple TouchID` here is the setup you will have:
 
@@ -35,9 +37,9 @@ You boot macOS
           → repeat until reboot or quit KeePassXC
 ```
 
-- **Is is convenient?** Yes, using `TouchID` + `osascripts` makes everything effortless. 
-  - Drop the password DB file into iCloud folder and `sync` is solved by Apple. 
-- **Is it still secure?** Yes, since entering password once needed. 
+- **Is it convenient?** Yes, using `TouchID` + `osascripts` makes everything effortless.
+  - Drop the password DB file into iCloud folder and `sync` is solved by Apple.
+- **Is it still secure?** Yes, since entering password once needed.
 
 Nothing is stored on disk. Keys and secrets exist in memory only while
 KeePassXC is unlocked. Lock your screen, close the lid, or log off
@@ -49,6 +51,7 @@ KeePassXC is unlocked. Lock your screen, close the lid, or log off
 
 - **ssh-gorilla** — secure SSH via KeePassXC Agent, auto-unlock with Touch ID
 - **env-gorilla** — run any command with secrets injected from KeePassXC, pure memory
+- **otp-gorilla** — show and copy 2FA/TOTP codes from KeePassXC, Touch ID powered
 - **gorilla-touchid** — Touch ID gate for your master password (Swift binary)
 - **VSCodium / VS Code** — debugpy attach pattern, secrets in memory, zero files
 
@@ -74,6 +77,15 @@ Runs any command with secrets injected from KeePassXC. No `.env` files written a
 ```bash
 env-gorilla project_x -- python main.py
 env-gorilla project_y -- npm run dev
+```
+
+### otp-gorilla
+
+Shows and copies 2FA/TOTP codes from KeePassXC. Stores TOTP secrets in KeePassXC entries under `2FA/` group — replaces Google Authenticator and other phone-based 2FA apps.
+
+```bash
+otp-gorilla              # show all OTP codes
+otp-gorilla Atlassian    # show + copy to clipboard
 ```
 
 ### gorilla-touchid
@@ -149,6 +161,26 @@ env-gorilla runs as a pre-launch task using the `debugpy` attach pattern — sec
 
 F5 → env-gorilla injects secrets in memory → debugpy starts → debugger attaches. Zero files. Requires `debugpy` in your venv: `pip install debugpy`
 
+## Install
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Auto-detects Mac with Touch ID vs no Touch ID (manual password).
+
+## Platform support
+
+| | With Touch ID | No Touch ID |
+|---|---|---|
+| ssh-gorilla | ✅ Auto-unlock via Touch ID, seamless SSH | ✅ KeePassXC unlock prompt, then SSH connects |
+| env-gorilla | ✅ Touch ID retrieves password, secrets injected | ✅ Type master password once per terminal session |
+| otp-gorilla | ✅ Touch ID retrieves password, codes displayed | ✅ Type master password, codes displayed |
+| gorilla-touchid | ✅ Stores & retrieves master password via fingerprint | ❌ Not installed, not needed |
+| KeePassXC SSH agent | ✅ Keys loaded on unlock, removed on lock | ✅ Keys loaded on unlock, removed on lock |
+| KeePassXC Quick Unlock | ✅ Touch ID after screen lock | ❌ Master password after screen lock |
+
 ## Adding projects
 
 ```bash
@@ -158,6 +190,17 @@ keepassxc-cli mkdir "$DB" "ENV"
 keepassxc-cli add "$DB" "ENV/project_x"
 keepassxc-cli attachment-import "$DB" "ENV/project_x" .env ~/Projects/project_x/.env
 ```
+
+## Adding 2FA/OTP
+
+```bash
+DB="$HOME/Library/Mobile Documents/com~apple~CloudDocs/db.kdbx"
+
+keepassxc-cli mkdir "$DB" "2FA"
+keepassxc-cli add "$DB" "2FA/ServiceName"
+```
+
+Then in KeePassXC GUI: right-click entry → TOTP → Set up TOTP → paste secret from the service.
 
 ## Updating .env files
 
@@ -172,6 +215,7 @@ Or via KeePassXC GUI: entry → Advanced → Attachments → replace.
 
 - SSH private key: encrypted attachment inside `.kdbx`, not a file on disk
 - `.env` secrets: encrypted attachments, injected into process memory at runtime
+- 2FA/TOTP secrets: stored inside `.kdbx`, codes generated on demand
 - No temp files, no cache files, no plaintext on disk — ever
 - Master password: stored in macOS Keychain, guarded by Touch ID (MacBook only)
 - Screen lock: SSH keys removed from agent automatically
@@ -182,6 +226,7 @@ Or via KeePassXC GUI: entry → Advanced → Attachments → replace.
 - Accidental `.env` commits to git
 - Backup/disk theft — secrets are encrypted at rest
 - Shoulder surfing — Touch ID replaces visible password typing
+- Phone-based 2FA theft — TOTP secrets stored in encrypted DB, not on a phone
 
 ### What this does NOT protect against
 - Physical coercion (forced Touch ID)
@@ -189,16 +234,23 @@ Or via KeePassXC GUI: entry → Advanced → Attachments → replace.
 - Memory forensics on a running process
 
 ## Files
+
+```
 s3c-gorilla/
 ├── env-gorilla              # .env injection tool (pure memory)
+├── otp-gorilla              # 2FA/TOTP code viewer + clipboard
 ├── ssh-gorilla.sh           # SSH wrapper (source in .zprofile)
 ├── gorilla-touchid.swift    # Touch ID helper (compiled on install)
 ├── install.sh               # Installer
 ├── .vscode/
 │   ├── tasks.example.json   # VSCodium task example
 │   └── launch.example.json  # VSCodium launch example
+├── CHANGELOG.md
 ├── README.md
-└── INSTALL.md
+├── INSTALL.md
+└── LICENSE
+```
 
 ## License
-MIT
+
+MIT — Copyright (c) 2026 Slav IT
