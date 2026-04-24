@@ -1,5 +1,37 @@
 .DS_Store
 *.o
-gorilla-touchid
-gorilla-touchid.entitlements
+touchid-gorilla
+touchid-gorilla.entitlements
 /build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Swift / Xcode
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+DerivedData/
+*.xcuserdata/
+*.xcuserdatad/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.dSYM/
+*.dSYM.zip
+
+# Logs
+logs/
+
+# Claude agent scratch
+.claude/worktrees/
+
+# MiSC
+/src-backup/
+install.sh.bak

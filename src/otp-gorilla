@@ -1,0 +1,180 @@
+#!/bin/bash
+##########################################################################################
+## otp-gorilla - show/copy OTP codes from KeePassXC, chip-wrapped
+## Part of s3c-gorilla. Boot-time: master pw → enumerate 2FA/ → chip-wrap
+## each secret. Runtime: Touch ID unwrap → compute TOTP → display + copy +
+## macOS notification.
+##
+## Usage:
+##   otp-gorilla              # show all OTP codes (lazy-wraps all 2FA entries)
+##   otp-gorilla atlas        # fuzzy-match: "atlas" → "Atlassian"
+##   otp-gorilla --clear      # wipe all OTP blobs from /tmp
+##########################################################################################
+
+GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
+[[ -f "$GORILLA_CONFIG" ]] && source "$GORILLA_CONFIG"
+
+: "${GORILLA_DB:=$HOME/Library/Mobile Documents/com~apple~CloudDocs/gorilla_tunnel.dat.kdbx}"
+: "${GORILLA_OTP_GROUP:=2FA}"
+: "${GORILLA_TOUCHID:=/usr/local/bin/touchid-gorilla}"
+: "${GORILLA_BANNERS:=/usr/local/share/s3c-gorilla/banners.sh}"
+: "${GORILLA_NOTIFIER:=terminal-notifier}"
+[[ -r "$GORILLA_BANNERS" ]] && source "$GORILLA_BANNERS"
+
+# ----------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------
+
+ask_master_pw() {
+    command -v show_master_banner &>/dev/null && show_master_banner
+    local pw
+    printf '🔐 KeePass master password: ' >&2
+    read -rs pw
+    printf '\n' >&2
+    printf '%s' "$pw"
+}
+
+# keepassxc-cli show returns the value of an attribute. Try both known TOTP
+# attribute names (newer "otp" → otpauth URI; older "TOTP-Secret" → base32).
+kdbx_extract_totp_value() {
+    local pw="$1"
+    local entry="$2"
+    local v
+    v=$(echo "$pw" | keepassxc-cli show "$GORILLA_DB" "$GORILLA_OTP_GROUP/$entry" -a otp -q 2>/dev/null)
+    if [[ -n "$v" && "$v" != "ERROR"* ]]; then
+        printf '%s' "$v"; return 0
+    fi
+    v=$(echo "$pw" | keepassxc-cli show "$GORILLA_DB" "$GORILLA_OTP_GROUP/$entry" -a TOTP-Secret -q 2>/dev/null)
+    if [[ -n "$v" && "$v" != "ERROR"* ]]; then
+        printf '%s' "$v"; return 0
+    fi
+    return 1
+}
+
+bootstrap_all() {
+    local pw
+    pw=$(ask_master_pw)
+    [[ -z "$pw" ]] && return 1
+    local services
+    services=$(echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_OTP_GROUP/" -q 2>/dev/null | grep -v '/$')
+    if [[ -z "$services" ]]; then
+        echo "otp-gorilla: no entries in $GORILLA_OTP_GROUP/" >&2
+        unset pw
+        return 1
+    fi
+    local count=0 svc val
+    while IFS= read -r svc; do
+        [[ -z "$svc" ]] && continue
+        val=$(kdbx_extract_totp_value "$pw" "$svc")
+        [[ -z "$val" ]] && continue
+        printf '%s' "$val" | "$GORILLA_TOUCHID" wrap "otp-$svc" &>/dev/null && count=$((count+1))
+    done <<< "$services"
+    unset pw val
+    echo "otp-gorilla: wrapped $count service(s) for this boot" >&2
+    [[ $count -gt 0 ]]
+}
+
+list_wrapped() {
+    shopt -s nullglob
+    local f base
+    for f in /tmp/s3c-gorilla/otp-*.blob; do
+        base=$(basename "$f" .blob)
+        echo "${base#otp-}"
+    done
+}
+
+# Case-insensitive substring match against wrapped services.
+# stdout = single matched name; stderr = multi-match guidance; exit 0 if exactly 1 match.
+fuzzy_match() {
+    local q="$1"
+    local q_lower
+    q_lower=$(echo "$q" | tr '[:upper:]' '[:lower:]')
+    local matches=() svc s_lower
+    while IFS= read -r svc; do
+        s_lower=$(echo "$svc" | tr '[:upper:]' '[:lower:]')
+        [[ "$s_lower" == *"$q_lower"* ]] && matches+=("$svc")
+    done < <(list_wrapped)
+    if [[ ${#matches[@]} -eq 0 ]]; then
+        return 1
+    elif [[ ${#matches[@]} -eq 1 ]]; then
+        printf '%s' "${matches[0]}"
+        return 0
+    else
+        echo "otp-gorilla: multiple matches for '$q':" >&2
+        printf '  %s\n' "${matches[@]}" >&2
+        return 1
+    fi
+}
+
+show_one() {
+    local svc="$1"
+    local val code
+    command -v show_touchid &>/dev/null && show_touchid
+    val=$("$GORILLA_TOUCHID" unwrap "otp-$svc" 2>/dev/null)
+    if [[ -z "$val" ]]; then
+        echo "otp-gorilla: unwrap cancelled or blob missing for $svc" >&2
+        return 1
+    fi
+    code=$("$GORILLA_TOUCHID" totp "$val" 2>/dev/null)
+    unset val
+    if [[ -z "$code" ]]; then
+        echo "otp-gorilla: failed to compute TOTP for $svc" >&2
+        return 1
+    fi
+    echo "$svc: $code"
+    printf '%s' "$code" | pbcopy
+    if command -v "$GORILLA_NOTIFIER" &>/dev/null; then
+        "$GORILLA_NOTIFIER" -title "OTP: $svc" -message "$code" &>/dev/null
+    fi
+}
+
+# ----------------------------------------------------------
+# Dispatch
+# ----------------------------------------------------------
+
+if [[ "$1" == "--clear" ]]; then
+    shopt -s nullglob
+    count=0
+    for f in /tmp/s3c-gorilla/otp-*.blob; do
+        trash "$f" 2>/dev/null || mv "$f" "$f.removed" 2>/dev/null
+        count=$((count + 1))
+    done
+    echo "otp-gorilla: cleared $count otp blob(s)"
+    exit 0
+fi
+
+# No args: lazy-wrap-all + show all codes
+if [[ -z "$1" ]]; then
+    if [[ -z "$(list_wrapped)" ]]; then
+        bootstrap_all || exit 1
+    fi
+    echo "All OTP codes:"
+    echo "────────────────────────────────"
+    command -v show_touchid &>/dev/null && show_touchid
+    while IFS= read -r svc; do
+        [[ -z "$svc" ]] && continue
+        val=$("$GORILLA_TOUCHID" unwrap "otp-$svc" 2>/dev/null)
+        code=$("$GORILLA_TOUCHID" totp "$val" 2>/dev/null)
+        unset val
+        printf "  %-24s  %s\n" "$svc" "${code:-—}"
+    done < <(list_wrapped)
+    echo "────────────────────────────────"
+    exit 0
+fi
+
+# With arg: fuzzy match
+if [[ -z "$(list_wrapped)" ]]; then
+    bootstrap_all || exit 1
+fi
+matched=$(fuzzy_match "$1")
+if [[ -z "$matched" ]]; then
+    # Maybe new services added since last boot — re-bootstrap
+    bootstrap_all || exit 1
+    matched=$(fuzzy_match "$1")
+fi
+if [[ -z "$matched" ]]; then
+    echo "otp-gorilla: no match for '$1'. Available:" >&2
+    list_wrapped | sed 's/^/  /' >&2
+    exit 1
+fi
+show_one "$matched"

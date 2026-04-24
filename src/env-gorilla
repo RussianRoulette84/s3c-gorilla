@@ -1,0 +1,161 @@
+#!/bin/bash
+##########################################################################################
+## env-gorilla - inject .env secrets from KeePassXC into any process
+## Part of s3c-gorilla. Uses touchid-gorilla chip-wrap primitives: master pw
+## is typed once per boot per project, then Touch ID unwraps on reruns.
+##
+## Usage:
+##   env-gorilla <project> -- <command>
+##   env-gorilla project_x -- uvicorn src.api.app:app --reload --port 8000
+##   env-gorilla --list          # show available projects
+##   env-gorilla --clear         # wipe all env blobs from /tmp
+##   env-gorilla --clear <proj>  # wipe one project's blob
+##########################################################################################
+
+GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
+[[ -f "$GORILLA_CONFIG" ]] && source "$GORILLA_CONFIG"
+
+: "${GORILLA_DB:=$HOME/Library/Mobile Documents/com~apple~CloudDocs/gorilla_tunnel.dat.kdbx}"
+: "${GORILLA_ENV_GROUP:=ENV}"
+: "${GORILLA_TOUCHID:=/usr/local/bin/touchid-gorilla}"
+: "${GORILLA_BANNERS:=/usr/local/share/s3c-gorilla/banners.sh}"
+[[ -r "$GORILLA_BANNERS" ]] && source "$GORILLA_BANNERS"
+
+# ----------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------
+
+ask_master_pw() {
+    command -v show_master_banner &>/dev/null && show_master_banner
+    local pw
+    printf '🔐 KeePass master password: ' >&2
+    read -rs pw
+    printf '\n' >&2
+    printf '%s' "$pw"
+}
+
+kdbx_extract_env() {
+    local pw="$1"
+    local project="$2"
+    echo "$pw" | keepassxc-cli attachment-export \
+        "$GORILLA_DB" "$GORILLA_ENV_GROUP/$project" .env --stdout -q 2>/dev/null
+}
+
+unwrap_blob() {
+    local project="$1"
+    command -v show_touchid &>/dev/null && show_touchid
+    "$GORILLA_TOUCHID" unwrap "env-$project" 2>/dev/null
+}
+
+bootstrap_and_get() {
+    local project="$1"
+    local pw env_data
+    pw=$(ask_master_pw)
+    [[ -z "$pw" ]] && { echo "env-gorilla: no password entered" >&2; return 1; }
+
+    env_data=$(kdbx_extract_env "$pw" "$project")
+    if [[ -z "$env_data" ]]; then
+        echo "env-gorilla: couldn't extract $GORILLA_ENV_GROUP/$project/.env (wrong password or missing entry)" >&2
+        unset pw
+        return 1
+    fi
+
+    if ! printf '%s' "$env_data" | "$GORILLA_TOUCHID" wrap "env-$project" &>/dev/null; then
+        echo "env-gorilla: failed to chip-wrap env blob" >&2
+        unset pw env_data
+        return 1
+    fi
+    unset pw
+    printf '%s' "$env_data"
+    unset env_data
+}
+
+get_env() {
+    local project="$1"
+    local blob_path="/tmp/s3c-gorilla/env-$project.blob"
+    local env_data
+
+    if [[ -f "$blob_path" ]]; then
+        env_data=$(unwrap_blob "$project")
+        if [[ -n "$env_data" ]]; then
+            printf '%s' "$env_data"
+            return 0
+        fi
+        echo "env-gorilla: Touch ID cancelled or blob corrupted — re-bootstrapping" >&2
+    fi
+    bootstrap_and_get "$project"
+}
+
+# ----------------------------------------------------------
+# Dispatch
+# ----------------------------------------------------------
+
+if [[ "$1" == "--list" ]]; then
+    echo "Available projects:"
+    pw=$(ask_master_pw)
+    echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_ENV_GROUP/" -q 2>/dev/null | grep -v '/$'
+    unset pw
+    exit 0
+fi
+
+if [[ "$1" == "--clear" ]]; then
+    if [[ -n "$2" ]]; then
+        "$GORILLA_TOUCHID" wrap-clear "env-$2"
+        echo "Cleared env-$2.blob"
+    else
+        shopt -s nullglob
+        for f in /tmp/s3c-gorilla/env-*.blob; do
+            trash "$f" 2>/dev/null || mv "$f" "$f.removed" 2>/dev/null
+            echo "Cleared $(basename "$f")"
+        done
+    fi
+    exit 0
+fi
+
+if [[ $# -lt 3 || "$*" != *" -- "* ]]; then
+    cat << 'EOF'
+env-gorilla — secrets from the vault, not from the disk
+
+Usage:
+  env-gorilla <project> -- <command>
+  env-gorilla --list                 Show available projects
+  env-gorilla --clear                Wipe all env blobs from /tmp
+  env-gorilla --clear <project>      Wipe one project's blob
+
+Examples:
+  env-gorilla project_x -- python main.py
+  env-gorilla project_y -- npm run dev
+  env-gorilla project_z -- uvicorn src.api.app:app --reload
+EOF
+    exit 1
+fi
+
+# ----------------------------------------------------------
+# Parse args
+# ----------------------------------------------------------
+PROJECT="$1"
+shift
+while [[ "$1" != "--" ]]; do shift; done
+shift
+
+# ----------------------------------------------------------
+# Fetch env
+# ----------------------------------------------------------
+echo "env-gorilla: loading $GORILLA_ENV_GROUP/$PROJECT …" >&2
+ENV_DATA=$(get_env "$PROJECT")
+if [[ -z "$ENV_DATA" ]]; then
+    echo "env-gorilla: aborted (no env data)" >&2
+    exit 1
+fi
+
+# ----------------------------------------------------------
+# Parse .env and export
+# ----------------------------------------------------------
+while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+    export "$line"
+done <<< "$ENV_DATA"
+unset ENV_DATA
+
+echo "env-gorilla: loaded — launching: $*" >&2
+exec "$@"

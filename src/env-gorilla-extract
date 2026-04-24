@@ -1,0 +1,45 @@
+#!/bin/bash
+##########################################################################################
+## env-gorilla-extract - extract .env from KeePassXC to a temp file
+## Caches result — only prompts Touch ID once per session
+## Usage: envgorilla-extract <project>
+##########################################################################################
+
+GORILLA_DB="$HOME/Library/Mobile Documents/com~apple~CloudDocs/gorilla_tunnel.dat.kdbx"
+GORILLA_TOUCHID="$HOME/bin/gorilla-touchid"
+PROJECT="$1"
+TMPFILE="/tmp/.envgorilla_${PROJECT}"
+
+if [[ -z "$PROJECT" ]]; then
+    echo "Usage: envgorilla-extract <project>"
+    exit 1
+fi
+
+# If cached file exists and is less than 12 hours old, reuse it
+if [[ -f "$TMPFILE" ]]; then
+    AGE=$(( $(date +%s) - $(stat -f%m "$TMPFILE") ))
+    if [[ $AGE -lt 43200 ]]; then
+        echo "✅ Using cached secrets for $PROJECT"
+        exit 0
+    fi
+fi
+
+# Get password via Touch ID or manual
+PW=$("$GORILLA_TOUCHID" 2>/dev/null)
+if [[ -z "$PW" ]]; then
+    read -s -p "🔐 Master password: " PW
+    echo ""
+fi
+
+# Extract and write to temp file
+echo "$PW" | keepassxc-cli attachment-export "$GORILLA_DB" "ENV/$PROJECT" .env --stdout -q 2>/dev/null > "$TMPFILE"
+unset PW
+
+if [[ ! -s "$TMPFILE" ]]; then
+    rm -f "$TMPFILE"
+    echo "❌ Failed to extract .env for $PROJECT"
+    exit 1
+fi
+
+chmod 600 "$TMPFILE"
+echo "✅ Secrets extracted for $PROJECT"

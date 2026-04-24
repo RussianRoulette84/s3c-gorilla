@@ -1,0 +1,22 @@
+{
+    "terminal.integrated.fontFamily": "MesloLGS NF, Apple Color Emoji",
+    "terminal.integrated.defaultProfile.osx": "zsh",
+    "terminal.integrated.fontSize": 12,
+    "terminal.integrated.lineHeight": 1.2,
+    "terminal.integrated.profiles.osx": {
+        "zsh": {
+            "path": "/bin/zsh",
+            "args": [],
+            "env": { "ZDOTDIR": "${env:HOME}" }
+        }
+    },
+    "files.exclude": {
+        "**/__pycache__": true
+    },
+    "search.exclude": {
+        "**/__pycache__": true
+    },
+    "files.watcherExclude": {
+        "**/__pycache__/**": true
+    }
+}

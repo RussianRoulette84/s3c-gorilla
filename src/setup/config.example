@@ -1,0 +1,22 @@
+# s3c-gorilla — user config
+#
+# install.sh copies this file to ~/.config/s3c-gorilla/config on first install.
+# Re-running install.sh will NOT overwrite an existing user config.
+# Edit your local copy at ~/.config/s3c-gorilla/config (not this file) to override defaults.
+
+# Path to your KeePassXC database (.kdbx)
+GORILLA_DB="$HOME/Library/Mobile Documents/com~apple~CloudDocs/KeePassDB.kdbx"
+
+# KeePassXC group where .env attachments live.
+# env-gorilla reads from "$GORILLA_ENV_GROUP/<project>".
+GORILLA_ENV_GROUP="ENV"
+
+# KeePassXC group where 2FA/TOTP entries live.
+# otp-gorilla reads from "$GORILLA_OTP_GROUP/<service>".
+GORILLA_OTP_GROUP="2FA"
+
+# SSH mode — picked at install time, persisted here.
+#   chip-wrap : keep your existing SSH key; master pw once per boot extracts
+#               it, chip-wraps into /tmp, Touch ID per sign.
+#   se-born   : chip-generated key, never leaves the chip, per-sign Touch ID.
+GORILLA_SSH_MODE="chip-wrap"

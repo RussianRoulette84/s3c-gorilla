@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<KeePassFile>
+  <Meta>
+    <DatabaseName>test</DatabaseName>
+    <Binaries>
+      <Binary ID="0" Compressed="False">dGVzdC1zc2gta2V5LWJ5dGVz</Binary>
+      <Binary ID="1" Compressed="False">QVBJX0tFWT1zZWNyZXQxMjMKREJfVVJMPXBvc3RncmVzOi8vLi4u</Binary>
+    </Binaries>
+  </Meta>
+  <Root>
+    <Group>
+      <Name>Root</Name>
+      <Group>
+        <Name>SSH</Name>
+        <Entry>
+          <String><Key>Title</Key><Value>id_rsa</Value></String>
+          <Binary><Key>filename</Key><Value Ref="0"/></Binary>
+        </Entry>
+      </Group>
+      <Group>
+        <Name>ENV</Name>
+        <Entry>
+          <String><Key>Title</Key><Value>project_x</Value></String>
+          <Binary><Key>.env</Key><Value Ref="1"/></Binary>
+        </Entry>
+      </Group>
+      <Group>
+        <Name>2FA</Name>
+        <Entry>
+          <String><Key>Title</Key><Value>GitHub</Value></String>
+          <String>
+            <Key>otp</Key>
+            <Value>otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP&amp;issuer=GitHub&amp;digits=8</Value>
+          </String>
+        </Entry>
+      </Group>
+    </Group>
+  </Root>
+</KeePassFile>

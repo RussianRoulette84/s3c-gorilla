@@ -1,0 +1,2 @@
+- **voice-gorilla IF no touchID**: voice password activated intead of touchID (when missing) - use my 'homer' TTS-SST project for this
+- add `AppleWatch` support (should be easy out of the box)
