@@ -2,6 +2,12 @@
 
 > **File location:** this file lives at `./plan/PLAN.md`. Updated live as work progresses.
 
+> **Before you start coding:** read
+> [plan/BUILD_STRATEGY.md](BUILD_STRATEGY.md) for the 7-point
+> rule set (branch-per-phase, red-first, parallel subagents,
+> dogfood early, keep this file alive). Execution happens inside
+> `cld --tmux-team` — see §Build strategy + execution model.
+
 ## 1. Implementation checklist (Claude updates)
 
 | Done | Success | Name | Description |
@@ -1792,6 +1798,56 @@ XML export verification on a real vault). It does NOT appear as
 a step in `install.sh`. The installer just ships the result.
 
 ---
+
+## Build strategy + execution model
+
+See [plan/BUILD_STRATEGY.md](BUILD_STRATEGY.md) for the full
+7-point rule set. Non-negotiable summary:
+
+1. **Never touch `master`.** All work goes through `develop`.
+2. **Branch-per-phase.** `phase/0-kcli-probe`, `phase/1-fanout`,
+   `phase/2-kpxc-push`. Merge into `develop` only after the
+   phase's PLAN.md §4 validation rows pass.
+3. **Red-first, one concern at a time.** Tests already
+   skip-stub most concerns. Remove a skip → ship the smallest
+   diff that passes → commit → next. The 43-concern list IS
+   the backlog.
+4. **Parallel subagents for genuinely independent work.** Spin
+   them in one turn when entering a phase. Dependencies must be
+   zero across panes.
+5. **`/review` after every phase merge** — de-slop first
+   (CLAUDE.md rule), then code review. No Phase-N cruft into
+   Phase-N+1.
+6. **Dogfood as soon as it compiles.** Real `id_rsa` + real
+   `ssh somehost` the minute fan-out works on one secret.
+7. **Keep this file alive.** Tick `[x]` + bump success % on
+   every closed concern. Add rows when new issues surface.
+   Stale plan mid-build > no plan.
+
+### Execution via `cld --tmux-team`
+Implementation runs inside `llm-docker`'s tmux-team layout:
+
+```
+┌────────────────┬─────────────────┐
+│                │  @agent-1       │  ← Opus subagent (purple)
+│                ├─────────────────┤
+│   @lead        │  @agent-2       │  ← Opus subagent (blue)
+│   60% width    ├─────────────────┤
+│   (Opus)       │  @agent-3-haiku │  ← Haiku cheap/fast runner (orange)
+└────────────────┴─────────────────┘
+```
+
+- **@lead** — orchestrator: reads PLAN.md, picks next concern,
+  delegates, merges, ticks boxes.
+- **@agent-1 / @agent-2** — Opus workers in parallel on
+  independent tasks (e.g. fan-out impl + install.sh refactor).
+- **@agent-3-haiku** — cheap/fast pane for test runs, lints,
+  file moves, grep sweeps. Don't send it design work.
+
+Shared FS + sessions inside one container (llm-docker's
+default). All four panes see the same repo, same `src/tests/`,
+same `plan/PLAN.md`. Commits from any pane land on the same
+branch.
 
 ## Implementation phases
 

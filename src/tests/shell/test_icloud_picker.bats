@@ -42,17 +42,18 @@ teardown() {
 }
 
 @test "shell-native 2s timeout pattern doesn't need gtimeout (Concern #30 / N5)" {
-    # Spawn a sleep, kill after ~1s, verify we escape the outer timebox.
+    # Spawn a long sleep, kill it via background killer after 1s.
+    # Concept under test: we can escape a blocking read without
+    # coreutils' gtimeout.
     start=$SECONDS
-    (
-        ( sleep 5 ) & pid=$!
-        ( sleep 1 && kill -TERM $pid 2>/dev/null ) & killer=$!
-        wait $pid 2>/dev/null
-        kill -TERM $killer 2>/dev/null
-    )
+    ( sleep 10 ) & pid=$!
+    ( sleep 1 && kill -TERM "$pid" 2>/dev/null ) &
+    wait "$pid" 2>/dev/null || true       # swallow SIGTERM exit status
     elapsed=$((SECONDS - start))
-    # Should be ~1s, never 5s. Allow 0-3s window.
+    # Should be ~1s, never 10s. Allow 0-3s window.
     [ "$elapsed" -lt 3 ]
+    # Confirm the target pid is actually dead.
+    ! kill -0 "$pid" 2>/dev/null
 }
 
 @test "eviction xattr detection probe logic (Concern #30)" {
