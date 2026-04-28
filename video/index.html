@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden;
+        background: #0a0a0a;
+        font-family: "JetBrains Mono", monospace;
+        color: #e8e8e8;
+      }
+
+      /* Brand gradient — purple → orange → pink (matches lib/ywizz/colorize.sh) */
+      .brand-gradient {
+        background: linear-gradient(90deg, #9b59ff 0%, #c97bcf 35%, #ff8c00 65%, #ff69b4 100%);
+        -webkit-background-clip: text; background-clip: text;
+        -webkit-text-fill-color: transparent; color: transparent;
+      }
+
+      .scene {
+        position: absolute; inset: 0;
+        width: 1920px; height: 1080px; overflow: hidden;
+      }
+      #scene1 { z-index: 1; background: #0a0a0a; }
+      #scene2 { z-index: 2; background: #0a0a0a; opacity: 0; }
+      #scene3 { z-index: 3; background: #0a0a0a; opacity: 0; }
+      #scene4 { z-index: 4; background: #0a0a0a; opacity: 0; }
+
+      .display { font-family: "Big Shoulders Display", sans-serif; font-weight: 900; letter-spacing: -0.02em; line-height: 0.92; }
+      .mono    { font-family: "JetBrains Mono", monospace; }
+
+      /* Common decoratives */
+      .grain {
+        position: absolute; inset: 0; pointer-events: none;
+        background-image:
+          radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+          radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
+        background-size: 3px 3px, 7px 7px;
+        background-position: 0 0, 1px 2px;
+        mix-blend-mode: screen; opacity: 0.5;
+      }
+      .vignette {
+        position: absolute; inset: 0; pointer-events: none;
+        background: radial-gradient(ellipse at center, rgba(10,10,10,0) 50%, rgba(0,0,0,0.85) 100%);
+      }
+      .glow-purple {
+        position: absolute; width: 1100px; height: 1100px;
+        background: radial-gradient(circle, rgba(155,89,255,0.22) 0%, rgba(155,89,255,0) 65%);
+        pointer-events: none; filter: blur(20px);
+      }
+      .glow-orange {
+        position: absolute; width: 1100px; height: 1100px;
+        background: radial-gradient(circle, rgba(255,140,0,0.18) 0%, rgba(255,140,0,0) 65%);
+        pointer-events: none; filter: blur(20px);
+      }
+      .corner-label {
+        position: absolute; font-family: "JetBrains Mono", monospace;
+        font-size: 16px; letter-spacing: 0.18em; color: #d787ff; text-transform: uppercase;
+      }
+      .tree-prefix { color: #d787ff; }
+      .hairline {
+        position: absolute; height: 1px;
+        background: linear-gradient(90deg, rgba(155,89,255,0.6) 0%, rgba(255,140,0,0.6) 100%);
+        transform-origin: left center;
+      }
+      .pagination {
+        position: absolute; bottom: 60px; right: 140px;
+        font-family: "Big Shoulders Display", sans-serif; font-weight: 900;
+        font-size: 80px; line-height: 0.85;
+      }
+      .pagination .num { color: #e8e8e8; }
+      .pagination .total { color: #3a3a3a; font-size: 28px; vertical-align: top; }
+
+      /* ============ SCENE 1 — WHAT (icon dominates) ============ */
+      .s1-content {
+        position: relative; width: 100%; height: 100%;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        padding: 120px 140px; gap: 24px; box-sizing: border-box;
+      }
+      .s1-eyebrow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 22px; letter-spacing: 0.32em; color: #d787ff; text-transform: uppercase; font-weight: 700;
+      }
+      .s1-icon-wrap {
+        position: relative; display: flex; align-items: center; justify-content: center;
+        width: 100%; max-width: 800px;
+      }
+      .s1-icon-glow {
+        position: absolute; width: 900px; height: 900px;
+        background: radial-gradient(circle, rgba(155,89,255,0.30) 0%, rgba(255,140,0,0.18) 50%, rgba(255,105,180,0) 75%);
+        filter: blur(30px);
+      }
+      .s1-icon {
+        width: 720px; height: 720px; object-fit: contain;
+        filter: drop-shadow(0 0 80px rgba(155,89,255,0.4));
+      }
+      .s1-title {
+        font-size: 200px; line-height: 0.88; text-align: center;
+        will-change: transform, opacity;
+      }
+      .s1-tag {
+        font-size: 28px; color: #cccccc; letter-spacing: 0.06em; text-align: center;
+        max-width: 1200px; line-height: 1.5;
+      }
+      .s1-tag em { color: #ff8c00; font-style: normal; font-weight: 700; }
+
+      /* ============ SCENE 2 — WHY ============ */
+      .s2-grid {
+        position: absolute; inset: 0; pointer-events: none;
+        background-image:
+          linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
+        background-size: 80px 80px;
+      }
+      .s2-content {
+        position: relative; width: 100%; height: 100%;
+        padding: 110px 140px;
+        display: flex; flex-direction: column; justify-content: center;
+        gap: 36px; box-sizing: border-box;
+      }
+      .s2-eyebrow {
+        font-size: 22px; letter-spacing: 0.32em; color: #d787ff; text-transform: uppercase; font-weight: 700;
+      }
+      .s2-headline {
+        font-size: 140px; color: #e8e8e8; max-width: 1500px;
+      }
+      .s2-headline .red { color: #ff5566; }
+      .s2-rule {
+        width: 320px; height: 2px;
+        background: linear-gradient(90deg, #9b59ff 0%, #ff8c00 100%);
+        transform-origin: left center;
+      }
+      .s2-list {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 14px 60px;
+        font-size: 26px; color: #cccccc; max-width: 1640px;
+      }
+      .s2-row {
+        display: grid; grid-template-columns: 1fr auto;
+        align-items: center; gap: 20px;
+        border-bottom: 1px solid #1a1a1a; padding: 14px 0;
+      }
+      .s2-row .path { color: #cccccc; }
+      .s2-row .badge {
+        font-size: 14px; letter-spacing: 0.22em; padding: 6px 12px; font-weight: 700;
+        background: #ff5566; color: #0a0a0a;
+      }
+      .s2-row .badge.soft {
+        background: #2a2a2a; color: #ff8c00; border: 1px solid #ff8c00;
+      }
+      .s2-threat {
+        margin-top: 24px;
+        font-size: 38px; color: #e8e8e8; line-height: 1.4; font-weight: 700;
+        font-family: "JetBrains Mono", monospace;
+      }
+      .s2-threat .danger { color: #ff5566; }
+      .s2-threat .next { color: #ff8c00; }
+
+      /* ============ SCENE 3 — HOW (wide terminal + macOS Touch ID modal) ============ */
+      .s3-content {
+        position: relative; width: 100%; height: 100%;
+        padding: 100px 100px 100px 100px;
+        display: flex; flex-direction: column; gap: 22px;
+        box-sizing: border-box;
+      }
+      .s3-header {
+        display: flex; justify-content: space-between; align-items: end; gap: 40px;
+        max-width: 1720px;
+      }
+      .s3-eyebrow {
+        font-size: 22px; letter-spacing: 0.32em; color: #d787ff;
+        text-transform: uppercase; font-weight: 700;
+      }
+      .s3-htitle {
+        font-size: 88px; line-height: 0.92; margin-top: 6px;
+      }
+      .s3-hsub {
+        font-size: 20px; line-height: 1.5; color: #aaaaaa; max-width: 760px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .s3-term {
+        position: relative;
+        width: 1720px;
+        flex: 1; min-height: 0;
+        background: #111014; border-radius: 14px;
+        border: 1px solid #2a2230;
+        box-shadow: 0 30px 80px rgba(155,89,255,0.16), inset 0 0 0 1px rgba(255,255,255,0.04);
+        display: flex; flex-direction: column;
+        font-family: "JetBrains Mono", monospace;
+        overflow: hidden;
+      }
+      .s3-term-bar {
+        padding: 14px 22px;
+        background: #1a1620;
+        display: flex; align-items: center; gap: 10px;
+        border-bottom: 1px solid #2a2230;
+      }
+      .s3-term-bar .dot { width: 13px; height: 13px; border-radius: 50%; }
+      .s3-term-bar .dot.r { background: #ff5566; }
+      .s3-term-bar .dot.y { background: #ff8c00; }
+      .s3-term-bar .dot.g { background: #9b59ff; }
+      .s3-term-bar .title {
+        margin-left: 14px; font-size: 14px; color: #6a6a6a; letter-spacing: 0.04em;
+      }
+      .s3-term-body {
+        padding: 24px 32px;
+        font-size: 18px; line-height: 1.5; color: #cccccc;
+        flex: 1; min-height: 0;
+        font-family: "JetBrains Mono", monospace;
+      }
+      .s3-line { display: block; white-space: pre; }
+      .s3-prompt { color: #d787ff; }
+      .s3-cmd    { color: #e8e8e8; }
+      .s3-out    { color: #888; }
+      .s3-ok     { color: #9b59ff; font-weight: 700; }
+      .s3-warn   { color: #ff8c00; }
+      .s3-err    { color: #ff5566; font-weight: 700; }
+      .s3-banner {
+        color: #d787ff; font-size: 14px; line-height: 1.05; white-space: pre;
+        font-weight: 700;
+      }
+      .s3-pwprompt { color: #e8e8e8; }
+      .s3-pwdots { color: #d787ff; letter-spacing: 0.18em; }
+      .s3-cursor {
+        display: inline-block; width: 10px; height: 18px; background: #d787ff;
+        vertical-align: -3px; margin-left: 4px;
+      }
+      .s3-strike { text-decoration: line-through; opacity: 0.5; }
+
+      /* ===== macOS Touch ID modal ===== */
+      .touchid-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(6px);
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0; pointer-events: none;
+        z-index: 50;
+      }
+      .touchid-modal {
+        width: 440px; padding: 38px 36px 28px 36px;
+        background: rgba(44, 44, 50, 0.96);
+        border-radius: 18px;
+        box-shadow:
+          0 30px 80px rgba(0, 0, 0, 0.6),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        text-align: center;
+        color: #f0f0f0;
+        font-family: "JetBrains Mono", monospace;
+      }
+      .touchid-app {
+        width: 56px; height: 56px;
+        margin: 0 auto 20px auto;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 6px;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      .touchid-app img { width: 100%; height: 100%; object-fit: contain; }
+      .touchid-title {
+        font-size: 20px; font-weight: 700; letter-spacing: 0.01em;
+        margin-bottom: 6px; color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .touchid-subtitle {
+        font-size: 14px; color: #b8b8c0; line-height: 1.5;
+        margin-bottom: 22px;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .touchid-fp-area {
+        position: relative;
+        width: 120px; height: 120px;
+        margin: 0 auto 20px auto;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .touchid-fp-glow {
+        position: absolute; inset: -20px;
+        background: radial-gradient(circle, rgba(255,140,0,0.4) 0%, rgba(255,140,0,0) 65%);
+        filter: blur(18px);
+      }
+      .touchid-fp {
+        width: 110px; height: 110px;
+      }
+      .touchid-fp path {
+        fill: none; stroke: #ff8c00; stroke-width: 4; stroke-linecap: round;
+      }
+      .touchid-pulse {
+        position: absolute; inset: 0;
+        border: 2px solid #ff8c00; border-radius: 50%;
+      }
+      .touchid-prompt {
+        font-size: 13px; color: #aaa; margin-bottom: 22px;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .touchid-buttons {
+        display: flex; gap: 10px; justify-content: center;
+      }
+      .touchid-buttons button {
+        flex: 1; padding: 9px 14px;
+        background: rgba(255, 255, 255, 0.07);
+        color: #e8e8e8; border: none; border-radius: 6px;
+        font-size: 13px; cursor: pointer;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .touchid-buttons button.primary {
+        background: rgba(155, 89, 255, 0.6);
+        color: #fff;
+      }
+
+      /* ===== Time-passes overlay ===== */
+      .s3-overlay {
+        position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        flex-direction: column; gap: 16px;
+        opacity: 0; pointer-events: none;
+        background: rgba(10, 10, 10, 0.7);
+        backdrop-filter: blur(4px);
+        z-index: 60;
+      }
+      .s3-overlay-eyebrow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 22px; letter-spacing: 0.32em; color: #ff8c00;
+        text-transform: uppercase; font-weight: 700;
+      }
+      .s3-overlay-title {
+        font-family: "Big Shoulders Display", sans-serif; font-weight: 900;
+        font-size: 240px; line-height: 0.88; letter-spacing: -0.02em;
+      }
+      .s3-overlay-sub {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 26px; color: #cccccc; max-width: 1200px; text-align: center;
+        line-height: 1.5;
+      }
+
+      /* Logout big lock icon */
+      .s3-lock-svg { width: 200px; height: 200px; margin-bottom: 20px; }
+      .s3-lock-svg path, .s3-lock-svg rect {
+        fill: none; stroke: #ff5566; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round;
+      }
+
+      /* ============ SCENE 4 — WHAT AGAIN ============ */
+      .s4-content {
+        position: relative; width: 100%; height: 100%;
+        padding: 100px 140px;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 30px; box-sizing: border-box; text-align: center;
+      }
+      .s4-ascii {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 18px; line-height: 0.95; letter-spacing: 0;
+        white-space: pre; margin-bottom: 8px;
+      }
+      .s4-title {
+        font-size: 220px; line-height: 0.88;
+      }
+      .s4-tag {
+        font-size: 30px; color: #cccccc; letter-spacing: 0.06em; max-width: 1200px; line-height: 1.5;
+      }
+      .s4-tag em { color: #ff8c00; font-style: normal; font-weight: 700; }
+      .s4-stack {
+        margin-top: 24px;
+        display: flex; gap: 18px; flex-wrap: wrap; justify-content: center;
+      }
+      .s4-stack span {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 18px; letter-spacing: 0.22em; color: #d787ff;
+        padding: 10px 18px; border: 1px solid #3a2a4a; text-transform: uppercase;
+      }
+      .s4-foot {
+        margin-top: 16px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 18px; letter-spacing: 0.18em; color: #6a6a6a;
+      }
+      .s4-foot .url { color: #ff8c00; }
+
+      .fade-overlay {
+        position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 999;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="180"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ============ SCENE 1 — WHAT ============ -->
+      <div id="scene1" class="scene">
+        <div class="grain"></div>
+        <div class="glow-purple" style="left: -350px; top: -350px;"></div>
+        <div class="glow-orange" style="right: -350px; bottom: -350px;"></div>
+
+        <div class="corner-label" style="top: 60px; left: 140px;">
+          <span class="tree-prefix">┌◇</span>&nbsp; S3C ⌬ GORILLA &nbsp;/&nbsp; v0.10
+        </div>
+        <div class="corner-label" style="top: 60px; right: 140px;">
+          MACOS · 2026
+        </div>
+
+        <div class="s1-content">
+          <div class="s1-eyebrow mono">▸ WHAT</div>
+          <div class="s1-icon-wrap">
+            <div class="s1-icon-glow"></div>
+            <img class="s1-icon" src="icon.png" alt="" />
+          </div>
+          <h1 class="s1-title display brand-gradient">S3C·GORILLA</h1>
+          <p class="s1-tag mono">
+            secrets from the <em>vault</em> into <em>memory</em>, not the <em>disk</em>.
+          </p>
+        </div>
+
+        <div class="hairline" style="left: 140px; bottom: 80px; width: 1640px;"></div>
+        <div class="pagination mono"><span class="num">01</span><span class="total"> / 04</span></div>
+        <div class="vignette"></div>
+      </div>
+
+      <!-- ============ SCENE 2 — WHY ============ -->
+      <div id="scene2" class="scene">
+        <div class="s2-grid"></div>
+        <div class="glow-purple" style="left: -300px; top: -300px;"></div>
+        <div class="glow-orange" style="right: -300px; bottom: 100px;"></div>
+
+        <div class="corner-label" style="top: 60px; left: 140px;">
+          <span class="tree-prefix">├◇</span>&nbsp; THE THREAT &nbsp;/&nbsp; 02
+        </div>
+        <div class="corner-label" style="top: 60px; right: 140px;">
+          PLAINTEXT · UNGATED · AT-REST
+        </div>
+
+        <div class="s2-content">
+          <div class="s2-eyebrow mono">▸ WHY</div>
+
+          <h2 class="s2-headline display">
+            <span class="s2-h-l1">YOUR SECRETS LIVE</span><br />
+            <span class="s2-h-l2 red">EVERYWHERE.</span>
+          </h2>
+          <div class="s2-rule"></div>
+
+          <div class="s2-list mono">
+            <div class="s2-row s2-r1">
+              <span class="path">~/.ssh/id_rsa</span>
+              <span class="badge">PLAINTEXT</span>
+            </div>
+            <div class="s2-row s2-r2">
+              <span class="path">~/.aws/credentials</span>
+              <span class="badge">PLAINTEXT</span>
+            </div>
+            <div class="s2-row s2-r3">
+              <span class="path">~/myproject/.env</span>
+              <span class="badge">PLAINTEXT</span>
+            </div>
+            <div class="s2-row s2-r4">
+              <span class="path">~/.config/gh/hosts.yml</span>
+              <span class="badge">PLAINTEXT</span>
+            </div>
+            <div class="s2-row s2-r5">
+              <span class="path">apple keychain</span>
+              <span class="badge soft">SOFT</span>
+            </div>
+            <div class="s2-row s2-r6">
+              <span class="path">2FA on a phone you can lose</span>
+              <span class="badge soft">SOFT</span>
+            </div>
+          </div>
+
+          <p class="s2-threat">
+            <span class="danger">ONE STOLEN LAPTOP.</span>
+            <span class="danger">ONE COMPROMISED LLM AGENT.</span>
+            <span class="next">→ GAME OVER.</span>
+          </p>
+        </div>
+
+        <div class="pagination mono"><span class="num">02</span><span class="total"> / 04</span></div>
+        <div class="vignette"></div>
+      </div>
+
+      <!-- ============ SCENE 3 — HOW ============ -->
+      <div id="scene3" class="scene">
+        <div class="grain"></div>
+        <div class="glow-purple" style="left: -300px; top: -200px;"></div>
+        <div class="glow-orange" style="right: -300px; bottom: -200px;"></div>
+
+        <div class="corner-label" style="top: 60px; left: 140px;">
+          <span class="tree-prefix">├◇</span>&nbsp; THE FLOW &nbsp;/&nbsp; 03
+        </div>
+        <div class="corner-label" style="top: 60px; right: 140px;">
+          KEEPASSXC + SECURE ENCLAVE + TOUCH ID
+        </div>
+
+        <div class="s3-content">
+          <div class="s3-header">
+            <div>
+              <div class="s3-eyebrow mono">▸ HOW</div>
+              <h3 class="s3-htitle display">
+                <span class="brand-gradient">PASSWORD ONCE.</span> FINGERPRINT FOREVER.
+              </h3>
+            </div>
+            <p class="s3-hsub">
+              Master password to bootstrap. Touch ID for everything after.
+              Wiped on logout — back to step one.
+            </p>
+          </div>
+
+          <div class="s3-term">
+            <div class="s3-term-bar">
+              <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+              <div class="title">~/myproject — zsh — env-gorilla</div>
+            </div>
+            <div class="s3-term-body">
+<span class="s3-line s3-l-1"><span class="s3-prompt">$</span> <span class="s3-cmd">env-gorilla myapi -- npm run dev</span></span>
+<span class="s3-line s3-l-2 s3-banner">  /$$$$$$   /$$$$$$  /$$   /$$        /$$$$$$   /$$$$$$  /$$$$$$$  /$$$$$$ /$$       /$$        /$$$$$$
+ /$$__  $$ /$$__  $$| $$  | $$       /$$__  $$ /$$__  $$| $$__  $$|_  $$_/| $$      | $$       /$$__  $$
+| $$  \__/| $$  \__/| $$  | $$      | $$  \__/| $$  \ $$| $$  \ $$  | $$  | $$      | $$      | $$  \ $$
+|  $$$$$$ |  $$$$$$ | $$$$$$$$      | $$ /$$$$| $$  | $$| $$$$$$$/  | $$  | $$      | $$      | $$$$$$$$
+ \____  $$ \____  $$| $$__  $$      | $$|_  $$| $$  | $$| $$__  $$  | $$  | $$      | $$      | $$__  $$
+ /$$  \ $$ /$$  \ $$| $$  | $$      | $$  \ $$| $$  | $$| $$  \ $$  | $$  | $$      | $$      | $$  | $$
+|  $$$$$$/|  $$$$$$/| $$  | $$      |  $$$$$$/|  $$$$$$/| $$  | $$ /$$$$$$| $$$$$$$$| $$$$$$$$| $$  | $$
+ \______/  \______/ |__/  |__/       \______/  \______/ |__/  |__/|______/|________/|________/|__/  |__/</span>
+<span class="s3-line s3-l-3"><span class="s3-pwprompt">🔐 KeePass master password: </span><span class="s3-pwdots"></span></span>
+<span class="s3-line s3-l-4"><span class="s3-ok">  ✓ KeePassXC opened — 14 secrets enumerated</span></span>
+<span class="s3-line s3-l-5"><span class="s3-ok">  ✓ id_rsa, .env, 2FA — SE-wrapped to /tmp/sg.*.blob</span></span>
+<span class="s3-line s3-l-6"><span class="s3-ok">  ✓ secrets injected into child — disk untouched</span></span>
+<span class="s3-line s3-l-7"><span class="s3-out">  > vite v5.4.6 ready in 312 ms · http://localhost:3000</span></span>
+
+<span class="s3-line s3-l-8"><span class="s3-prompt">$</span> <span class="s3-cmd">env-gorilla myapi -- npm run dev</span></span>
+<span class="s3-line s3-l-9"><span class="s3-ok">  ✓ unwrapped from SE — 0.3s · no master pw needed</span></span>
+<span class="s3-line s3-l-10"><span class="s3-out">  > vite v5.4.6 ready in 287 ms · http://localhost:3000</span></span>
+
+<span class="s3-line s3-l-11"><span class="s3-err">  🔒 user logout · screen lock · reboot</span></span>
+<span class="s3-line s3-l-12"><span class="s3-err">  ✗ /tmp/sg.*.blob — wiped (12 blobs)</span></span>
+<span class="s3-line s3-l-13"><span class="s3-err">  ✗ Secure Enclave keys — revoked</span></span>
+<span class="s3-line s3-l-14"><span class="s3-err">  ✗ session — sealed</span></span>
+
+<span class="s3-line s3-l-15"><span class="s3-prompt">$</span> <span class="s3-cmd">env-gorilla myapi -- npm run dev</span></span>
+<span class="s3-line s3-l-16"><span class="s3-pwprompt">🔐 KeePass master password: </span><span class="s3-cursor"></span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Touch ID modal #1 (first run — pair fingerprint to wrap) — full-scene overlay -->
+        <div id="td1" class="touchid-overlay">
+          <div class="touchid-modal">
+            <div class="touchid-app"><img src="icon.png" alt=""/></div>
+            <div class="touchid-title">Touch ID for env-gorilla</div>
+            <div class="touchid-subtitle">Pair fingerprint · wrap 12 secrets to /tmp</div>
+            <div class="touchid-fp-area">
+              <div class="touchid-fp-glow"></div>
+              <div class="touchid-pulse td1-pulse"></div>
+              <svg class="touchid-fp td1-fp" viewBox="0 0 200 200">
+                <path class="fp-1" d="M40,110 C40,70 70,42 100,42 C130,42 160,70 160,110" />
+                <path class="fp-2" d="M55,118 C55,82 78,58 100,58 C122,58 145,82 145,118 C145,134 142,148 138,160" />
+                <path class="fp-3" d="M70,124 C70,94 86,74 100,74 C114,74 130,94 130,124 C130,142 126,156 120,166" />
+                <path class="fp-4" d="M82,130 C82,108 92,90 100,90 C108,90 118,108 118,130 C118,148 114,160 108,170" />
+                <path class="fp-5" d="M94,138 C94,124 96,112 100,112 C104,112 106,124 106,140" />
+                <path class="fp-6" d="M48,138 C52,150 58,160 66,168" />
+                <path class="fp-7" d="M152,138 C148,150 142,160 134,168" />
+              </svg>
+            </div>
+            <div class="touchid-prompt">Touch ID</div>
+            <div class="touchid-buttons">
+              <button>Use Password…</button>
+              <button>Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Touch ID modal #2 (subsequent run — single-secret unwrap) — full-scene overlay -->
+        <div id="td2" class="touchid-overlay">
+          <div class="touchid-modal">
+            <div class="touchid-app"><img src="icon.png" alt=""/></div>
+            <div class="touchid-title">Touch ID for env-gorilla</div>
+            <div class="touchid-subtitle">Decrypt secret &ldquo;env/myapi&rdquo;</div>
+            <div class="touchid-fp-area">
+              <div class="touchid-fp-glow"></div>
+              <div class="touchid-pulse td2-pulse"></div>
+              <svg class="touchid-fp td2-fp" viewBox="0 0 200 200">
+                <path class="fp-1" d="M40,110 C40,70 70,42 100,42 C130,42 160,70 160,110" />
+                <path class="fp-2" d="M55,118 C55,82 78,58 100,58 C122,58 145,82 145,118 C145,134 142,148 138,160" />
+                <path class="fp-3" d="M70,124 C70,94 86,74 100,74 C114,74 130,94 130,124 C130,142 126,156 120,166" />
+                <path class="fp-4" d="M82,130 C82,108 92,90 100,90 C108,90 118,108 118,130 C118,148 114,160 108,170" />
+                <path class="fp-5" d="M94,138 C94,124 96,112 100,112 C104,112 106,124 106,140" />
+                <path class="fp-6" d="M48,138 C52,150 58,160 66,168" />
+                <path class="fp-7" d="M152,138 C148,150 142,160 134,168" />
+              </svg>
+            </div>
+            <div class="touchid-prompt">Touch ID</div>
+            <div class="touchid-buttons">
+              <button>Use Password…</button>
+              <button>Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Time-passes overlay -->
+        <div id="ovTime" class="s3-overlay">
+          <div class="s3-overlay-eyebrow">⏱  TIME PASSES</div>
+          <div class="s3-overlay-title brand-gradient">5 MINUTES LATER</div>
+          <div class="s3-overlay-sub">same project · same terminal · same fingerprint</div>
+        </div>
+
+        <!-- Logout overlay -->
+        <div id="ovLogout" class="s3-overlay">
+          <svg class="s3-lock-svg" viewBox="0 0 100 100">
+            <rect x="20" y="42" width="60" height="48" rx="6"/>
+            <path d="M32,42 V28 a18,18 0 0 1 36,0 V42"/>
+          </svg>
+          <div class="s3-overlay-eyebrow" style="color:#ff5566;">⌘  USER LOGS OUT</div>
+          <div class="s3-overlay-title" style="color:#ff5566;">EVERYTHING WIPES</div>
+          <div class="s3-overlay-sub">SIGTERM → /tmp blobs deleted · SE keys revoked · vault sealed</div>
+        </div>
+
+        <!-- Locked overlay -->
+        <div id="ovLocked" class="s3-overlay">
+          <svg class="s3-lock-svg" viewBox="0 0 100 100" style="width:240px; height:240px;">
+            <defs>
+              <linearGradient id="lockGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#9b59ff"/>
+                <stop offset="60%" stop-color="#ff8c00"/>
+                <stop offset="100%" stop-color="#ff69b4"/>
+              </linearGradient>
+            </defs>
+            <rect x="20" y="42" width="60" height="48" rx="6" stroke="url(#lockGrad)"/>
+            <path d="M32,42 V28 a18,18 0 0 1 36,0 V42" stroke="url(#lockGrad)"/>
+          </svg>
+          <div class="s3-overlay-eyebrow">▣  STATE</div>
+          <div class="s3-overlay-title brand-gradient">VAULT LOCKED</div>
+          <div class="s3-overlay-sub">master password required on next login · just like the first time</div>
+        </div>
+
+        <div class="pagination mono"><span class="num">03</span><span class="total"> / 04</span></div>
+        <div class="vignette"></div>
+      </div>
+
+      <!-- ============ SCENE 4 — WHAT AGAIN ============ -->
+      <div id="scene4" class="scene">
+        <div class="grain"></div>
+        <div class="glow-purple" style="left: -300px; top: -200px;"></div>
+        <div class="glow-orange" style="right: -300px; bottom: -200px;"></div>
+
+        <div class="corner-label" style="top: 60px; left: 140px;">
+          <span class="tree-prefix">└◇</span>&nbsp; S3C ⌬ GORILLA
+        </div>
+        <div class="corner-label" style="top: 60px; right: 140px;">
+          04 / 04
+        </div>
+
+        <div class="s4-content">
+          <pre class="s4-ascii brand-gradient">    ⢀⣠⣴⠶⠚⠛⢶⣄
+    ⢸⣿⣿⣿⡆  ⠙⢷⣄
+   ⣰⣿⣿⣿⣿⣿⣿⣷⣶⣶⣿⣦⡀
+  ⣴⣿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣤⣤⣄⣀⡀
+ ⠘⣥⣤⠶⣶⣼⣿⣿⠟⠁ ⠉⠛⠿⣿⣿⣿⡟⠛⠻⢷⡄
+ ⢠⡞⠛⠒⣿⣿⣿⠏     ⣠⣾⣿⣿⣿⡄  ⠻⣦⡀
+⢠⡎ ⣴⣶⣿⣿⡟    ⢠⣾⣿⣿⣿⣿⣿⣷   ⠈⠻⣷⣄⡀⢀⣀⣠⣤⣤⣤⣤⣄⣀
+⢮⣉⣹⣿⣿⣿⣿⡇ ⢠⣀⣴⣿⣿⣿⣿⣿⣿⣿⣿     ⠈⠛⠟⠛⠛⠋⠉⠉⠉⠉⠉⠻⣷⣄
+ ⠹⣿⣿⣿⡟⢸ ⢀⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄              ⠈⢿⣧⡀
+  ⠘⠿⠟⠃⢸ ⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷  ⡴      ⢀⣠⣤⣄⡀  ⢻⣿⣆
+      ⢸⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⣴⡇   ⣀⣴⣾⣿⣿⣿⣿⣿⣶⣄ ⢻⣿⣷⡀
+      ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⣿⣿⣿⣿⣿⣿⢁⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣿⣆
+     ⢠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⣰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡀
+    ⢀⡿⠁⣿⣿⣿⣿⣿⣿⣿⣿⠟⠁⣰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇
+    ⣸⠃ ⣿⣿⣿⣿⣿⣿⣿⠃ ⠈⠛⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇⡀</pre>
+
+          <h2 class="s4-title display brand-gradient">S3C·GORILLA</h2>
+
+          <p class="s4-tag mono">
+            secrets from the <em>vault</em> into <em>memory</em>, not the <em>disk</em>.
+          </p>
+
+          <div class="s4-stack mono">
+            <span>macOS 12+</span>
+            <span>KeePassXC</span>
+            <span>Touch ID</span>
+            <span>Secure Enclave</span>
+            <span>MIT</span>
+          </div>
+
+          <div class="s4-foot mono">
+            <span class="url">github.com/RussianRoulette84/s3c-gorilla</span>
+            &nbsp; · &nbsp; bash &lt;(curl -fsSL .../install.sh)
+          </div>
+        </div>
+      </div>
+
+      <div id="fadeOut" class="fade-overlay"></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* ===== Scene visibility ranges (hard kills) ===== */
+      tl.set("#scene2", { visibility: "hidden" }, 0);
+      tl.set("#scene3", { visibility: "hidden" }, 0);
+      tl.set("#scene4", { visibility: "hidden" }, 0);
+
+      /* ===== Hide all terminal lines initially (they reveal in beats) ===== */
+      const allLines = ["s3-l-1","s3-l-2","s3-l-3","s3-l-4","s3-l-5","s3-l-6","s3-l-7",
+                        "s3-l-8","s3-l-9","s3-l-10",
+                        "s3-l-11","s3-l-12","s3-l-13","s3-l-14",
+                        "s3-l-15","s3-l-16"];
+      allLines.forEach(id => tl.set("." + id, { autoAlpha: 0 }, 0));
+
+      /* ===== Ambient glows breathe across the whole composition ===== */
+      tl.to(".glow-purple", { scale: 1.08, duration: 14, ease: "sine.inOut", repeat: 11, yoyo: true }, 0);
+      tl.to(".glow-orange", { scale: 1.06, duration: 13, ease: "sine.inOut", repeat: 11, yoyo: true }, 1);
+
+      /* =====================================================
+         SCENE 1 — WHAT  (0 → 19.5s) — icon dominates
+         narration window: ~17s
+         ===================================================== */
+      tl.from("#scene1 .corner-label", { y: -20, opacity: 0, duration: 0.6, ease: "power2.out", stagger: 0.10 }, 0.2);
+      tl.from("#scene1 .s1-eyebrow", { x: -20, opacity: 0, duration: 0.6, ease: "power3.out" }, 0.5);
+
+      // Icon: bloom in from blur+scale, glow halo expands
+      tl.from("#scene1 .s1-icon", {
+        scale: 0.55, opacity: 0, filter: "blur(28px) brightness(0.2)",
+        duration: 1.6, ease: "power3.out"
+      }, 0.7);
+      tl.from("#scene1 .s1-icon-glow", { scale: 0.4, opacity: 0, duration: 1.8, ease: "sine.out" }, 0.8);
+      // Icon ambient breathing for the rest of the scene
+      tl.to("#scene1 .s1-icon", { scale: 1.04, duration: 6, ease: "sine.inOut", yoyo: true, repeat: 1 }, 2.6);
+
+      tl.from("#scene1 .s1-title", {
+        clipPath: "inset(0 100% 0 0)", y: 30, duration: 1.0, ease: "expo.out"
+      }, 2.2);
+      tl.from("#scene1 .s1-tag", { y: 24, opacity: 0, duration: 0.7, ease: "power2.out" }, 3.2);
+
+      tl.from("#scene1 .hairline", { scaleX: 0, duration: 1.0, ease: "power3.out" }, 0.7);
+      tl.from("#scene1 .pagination", { x: 30, opacity: 0, duration: 0.6, ease: "power2.out" }, 1.0);
+
+      /* ===== Transition 1: blur crossfade (T = 19.0s) ===== */
+      const T1 = 19.0;
+      tl.set("#scene2", { visibility: "visible", filter: "blur(10px)", scale: 0.97 }, T1);
+      tl.to("#scene1", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.5, ease: "power2.inOut" }, T1);
+      tl.to("#scene2", { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.5, ease: "power2.inOut" }, T1 + 0.1);
+      tl.set("#scene1", { visibility: "hidden" }, T1 + 0.7);
+
+      /* =====================================================
+         SCENE 2 — WHY  (~19.5 → ~49.5s) — narration ~28s
+         ===================================================== */
+      const S2 = 19.5;
+      tl.from("#scene2 .corner-label", { y: -16, opacity: 0, duration: 0.5, ease: "power2.out", stagger: 0.10 }, S2);
+      tl.from("#scene2 .s2-grid",      { opacity: 0, duration: 1.4, ease: "sine.out" }, S2);
+      tl.from("#scene2 .s2-eyebrow",   { x: -20, opacity: 0, duration: 0.6, ease: "power3.out" }, S2 + 0.15);
+
+      tl.from("#scene2 .s2-h-l1", { clipPath: "inset(0 0 100% 0)", y: 30, duration: 0.7, ease: "expo.out" }, S2 + 0.40);
+      tl.from("#scene2 .s2-h-l2", { clipPath: "inset(0 0 100% 0)", y: 30, duration: 0.7, ease: "expo.out" }, S2 + 0.85);
+
+      tl.from("#scene2 .s2-rule", { scaleX: 0, duration: 0.7, ease: "power3.out" }, S2 + 1.4);
+
+      // Slow stagger so narrator can call them out
+      const rowOrder = [".s2-r1", ".s2-r2", ".s2-r3", ".s2-r4", ".s2-r5", ".s2-r6"];
+      rowOrder.forEach((sel, i) => {
+        tl.from("#scene2 " + sel + " .path",  { x: -30, opacity: 0, duration: 0.5, ease: "power3.out" }, S2 + 2.0 + i * 0.30);
+        tl.from("#scene2 " + sel + " .badge", { scale: 0.6, opacity: 0, duration: 0.4, ease: "power2.out" }, S2 + 2.20 + i * 0.30);
+      });
+
+      tl.from("#scene2 .s2-threat", { opacity: 0, duration: 0.6, ease: "power2.out" }, S2 + 5.0);
+      tl.from("#scene2 .s2-threat .danger:nth-of-type(1)", { x: -30, opacity: 0, duration: 0.6, ease: "expo.out" }, S2 + 5.2);
+      tl.from("#scene2 .s2-threat .danger:nth-of-type(2)", { x: -30, opacity: 0, duration: 0.6, ease: "expo.out" }, S2 + 6.4);
+      tl.from("#scene2 .s2-threat .next",   { scale: 0.8, opacity: 0, duration: 0.6, ease: "back.out(1.4)" }, S2 + 7.7);
+
+      tl.from("#scene2 .pagination", { x: 30, opacity: 0, duration: 0.5, ease: "power2.out" }, S2 + 0.5);
+
+      /* ===== Transition 2: blur crossfade (T = 49.0s) ===== */
+      const T2 = 49.0;
+      tl.set("#scene3", { visibility: "visible", filter: "blur(10px)", scale: 0.97 }, T2);
+      tl.to("#scene2", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.5, ease: "power2.inOut" }, T2);
+      tl.to("#scene3", { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.5, ease: "power2.inOut" }, T2 + 0.1);
+      tl.set("#scene2", { visibility: "hidden" }, T2 + 0.7);
+
+      /* =====================================================
+         SCENE 3 — HOW  (~49.5 → ~149.5s) — narration ~95s
+         Six beats laid out for voice-over.
+         ===================================================== */
+      const S3 = 49.5;
+
+      tl.from("#scene3 .corner-label", { y: -16, opacity: 0, duration: 0.5, ease: "power2.out", stagger: 0.10 }, S3);
+      tl.from("#scene3 .s3-eyebrow",   { x: -20, opacity: 0, duration: 0.6, ease: "power3.out" }, S3 + 0.15);
+      tl.from("#scene3 .s3-htitle",    { clipPath: "inset(0 100% 0 0)", duration: 1.0, ease: "expo.out" }, S3 + 0.30);
+      tl.from("#scene3 .s3-hsub",      { y: 20, opacity: 0, duration: 0.6, ease: "power2.out" }, S3 + 0.85);
+      tl.from("#scene3 .s3-term",      { y: 60, opacity: 0, duration: 0.9, ease: "power3.out" }, S3 + 0.45);
+      tl.from("#scene3 .pagination",   { x: 30, opacity: 0, duration: 0.5, ease: "power2.out" }, S3 + 0.5);
+
+      /* ----- BEAT 1: First-run command + banner + master pw entry (51 → 73s) ----- */
+      const B1 = S3 + 1.5;   // 51.0
+      // Command line types in
+      tl.fromTo("#scene3 .s3-l-1",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 1.2, ease: "power2.out" },
+        B1);
+      // SSH GORILLA banner appears with vertical reveal
+      tl.fromTo("#scene3 .s3-l-2",
+        { autoAlpha: 0, clipPath: "inset(0 0 100% 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0 0% 0)", duration: 1.5, ease: "power2.out" },
+        B1 + 1.6);
+      // Master password prompt
+      tl.fromTo("#scene3 .s3-l-3",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power2.out" },
+        B1 + 4.2);
+      // Password dots type in (one at a time)
+      const pwDots = "●●●●●●●●●●●●";
+      pwDots.split("").forEach((c, i) => {
+        tl.to("#scene3 .s3-pwdots", { textContent: pwDots.slice(0, i + 1), duration: 0.18, ease: "none" }, B1 + 5.4 + i * 0.18);
+      });
+
+      /* ----- BEAT 2: Touch ID modal #1 + wrap + secrets injected (73 → 93s) ----- */
+      const B2 = S3 + 23.0;  // 72.5
+
+      // Touch ID modal appears
+      tl.to("#td1", { autoAlpha: 1, duration: 0.5, ease: "power2.out" }, B2 + 0.0);
+      tl.from("#td1 .touchid-modal", { y: 20, scale: 0.96, duration: 0.5, ease: "power3.out" }, B2 + 0.0);
+
+      // Fingerprint draws stroke-by-stroke (slow scan)
+      tl.set("#td1 .touchid-fp path", { strokeDasharray: 1000, strokeDashoffset: 1000 }, B2);
+      tl.to("#td1 .touchid-fp .fp-1", { strokeDashoffset: 0, duration: 0.55, ease: "power2.inOut" }, B2 + 0.7);
+      tl.to("#td1 .touchid-fp .fp-2", { strokeDashoffset: 0, duration: 0.65, ease: "power2.inOut" }, B2 + 0.95);
+      tl.to("#td1 .touchid-fp .fp-3", { strokeDashoffset: 0, duration: 0.70, ease: "power2.inOut" }, B2 + 1.20);
+      tl.to("#td1 .touchid-fp .fp-4", { strokeDashoffset: 0, duration: 0.70, ease: "power2.inOut" }, B2 + 1.45);
+      tl.to("#td1 .touchid-fp .fp-5", { strokeDashoffset: 0, duration: 0.55, ease: "power2.inOut" }, B2 + 1.70);
+      tl.to("#td1 .touchid-fp .fp-6", { strokeDashoffset: 0, duration: 0.50, ease: "power2.inOut" }, B2 + 1.85);
+      tl.to("#td1 .touchid-fp .fp-7", { strokeDashoffset: 0, duration: 0.50, ease: "power2.inOut" }, B2 + 1.95);
+
+      // Pulse rings during scan
+      tl.fromTo("#td1 .td1-pulse",
+        { scale: 0.9, opacity: 0.7 },
+        { scale: 1.6, opacity: 0,  duration: 1.4, ease: "power2.out", repeat: 3 },
+        B2 + 0.7);
+
+      // Stroke fingerprint pulse-glow at completion
+      tl.to("#td1 .touchid-fp path", { stroke: "#9b59ff", duration: 0.6, ease: "power2.inOut" }, B2 + 2.6);
+
+      // Modal dismisses after success
+      tl.to("#td1", { autoAlpha: 0, duration: 0.5, ease: "power2.in" }, B2 + 5.5);
+      tl.to("#td1 .touchid-modal", { y: -10, scale: 0.97, duration: 0.5, ease: "power2.in" }, B2 + 5.5);
+
+      // Terminal: success lines reveal one by one
+      tl.fromTo("#scene3 .s3-l-4",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power2.out" },
+        B2 + 6.5);
+      tl.fromTo("#scene3 .s3-l-5",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power2.out" },
+        B2 + 7.5);
+      tl.fromTo("#scene3 .s3-l-6",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power2.out" },
+        B2 + 8.5);
+      tl.fromTo("#scene3 .s3-l-7",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power2.out" },
+        B2 + 9.6);
+
+      /* ----- BEAT 3: TIME PASSES overlay (93 → 105s) ----- */
+      const B3 = S3 + 43.5; // 93.0
+
+      tl.to("#ovTime", { autoAlpha: 1, duration: 0.7, ease: "power2.out" }, B3);
+      tl.from("#ovTime .s3-overlay-eyebrow", { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, B3 + 0.2);
+      tl.from("#ovTime .s3-overlay-title", { y: 40, opacity: 0, scale: 0.9, duration: 0.9, ease: "expo.out" }, B3 + 0.5);
+      tl.from("#ovTime .s3-overlay-sub", { y: 16, opacity: 0, duration: 0.6, ease: "power2.out" }, B3 + 1.4);
+      tl.to("#ovTime", { autoAlpha: 0, duration: 0.7, ease: "power2.in" }, B3 + 7.5);
+
+      /* ----- BEAT 4: Subsequent run — only Touch ID #2 (105 → 125s) ----- */
+      const B4 = S3 + 55.5; // 105.0
+
+      // Command line
+      tl.fromTo("#scene3 .s3-l-8",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 1.0, ease: "power2.out" },
+        B4);
+
+      // Touch ID #2 modal pops up immediately (no master pw)
+      tl.to("#td2", { autoAlpha: 1, duration: 0.4, ease: "power2.out" }, B4 + 1.4);
+      tl.from("#td2 .touchid-modal", { y: 20, scale: 0.96, duration: 0.4, ease: "power3.out" }, B4 + 1.4);
+
+      // Fingerprint draws faster (it's already paired)
+      tl.set("#td2 .touchid-fp path", { strokeDasharray: 1000, strokeDashoffset: 1000 }, B4);
+      const fp2Start = B4 + 1.9;
+      tl.to("#td2 .touchid-fp .fp-1", { strokeDashoffset: 0, duration: 0.30, ease: "power2.inOut" }, fp2Start + 0.00);
+      tl.to("#td2 .touchid-fp .fp-2", { strokeDashoffset: 0, duration: 0.34, ease: "power2.inOut" }, fp2Start + 0.10);
+      tl.to("#td2 .touchid-fp .fp-3", { strokeDashoffset: 0, duration: 0.36, ease: "power2.inOut" }, fp2Start + 0.20);
+      tl.to("#td2 .touchid-fp .fp-4", { strokeDashoffset: 0, duration: 0.36, ease: "power2.inOut" }, fp2Start + 0.30);
+      tl.to("#td2 .touchid-fp .fp-5", { strokeDashoffset: 0, duration: 0.30, ease: "power2.inOut" }, fp2Start + 0.40);
+      tl.to("#td2 .touchid-fp .fp-6", { strokeDashoffset: 0, duration: 0.28, ease: "power2.inOut" }, fp2Start + 0.50);
+      tl.to("#td2 .touchid-fp .fp-7", { strokeDashoffset: 0, duration: 0.28, ease: "power2.inOut" }, fp2Start + 0.55);
+
+      // Pulse fast, single hit
+      tl.fromTo("#td2 .td2-pulse",
+        { scale: 0.9, opacity: 0.7 },
+        { scale: 1.6, opacity: 0,  duration: 0.9, ease: "power2.out", repeat: 1 },
+        B4 + 1.9);
+
+      // Stroke turns purple (success)
+      tl.to("#td2 .touchid-fp path", { stroke: "#9b59ff", duration: 0.4, ease: "power2.inOut" }, B4 + 3.0);
+
+      // Modal dismisses
+      tl.to("#td2", { autoAlpha: 0, duration: 0.5, ease: "power2.in" }, B4 + 4.5);
+      tl.to("#td2 .touchid-modal", { y: -10, scale: 0.97, duration: 0.5, ease: "power2.in" }, B4 + 4.5);
+
+      // Success lines
+      tl.fromTo("#scene3 .s3-l-9",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B4 + 5.4);
+      tl.fromTo("#scene3 .s3-l-10",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B4 + 6.4);
+
+      /* ----- BEAT 5: User logs out (125 → 145s) ----- */
+      const B5 = S3 + 75.5; // 125.0
+
+      tl.to("#ovLogout", { autoAlpha: 1, duration: 0.7, ease: "power2.out" }, B5);
+      tl.from("#ovLogout .s3-lock-svg", { scale: 0.6, opacity: 0, duration: 0.8, ease: "power3.out" }, B5 + 0.2);
+      tl.from("#ovLogout .s3-overlay-eyebrow", { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, B5 + 0.6);
+      tl.from("#ovLogout .s3-overlay-title", { y: 40, opacity: 0, scale: 0.9, duration: 0.9, ease: "expo.out" }, B5 + 0.9);
+      tl.from("#ovLogout .s3-overlay-sub", { y: 16, opacity: 0, duration: 0.6, ease: "power2.out" }, B5 + 1.7);
+
+      // Hold for narration ~4s, then dismiss to reveal the wipe lines below
+      tl.to("#ovLogout", { autoAlpha: 0, duration: 0.7, ease: "power2.in" }, B5 + 6.0);
+
+      // Mark earlier success lines as struck-through (dimmed) — visualize the wipe
+      tl.to("#scene3 .s3-l-4, #scene3 .s3-l-5, #scene3 .s3-l-6, #scene3 .s3-l-7, #scene3 .s3-l-9, #scene3 .s3-l-10",
+        { color: "#444", duration: 0.5, ease: "power2.in" }, B5 + 6.3);
+
+      // Wipe lines reveal one by one
+      tl.fromTo("#scene3 .s3-l-11",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B5 + 7.0);
+      tl.fromTo("#scene3 .s3-l-12",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B5 + 8.0);
+      tl.fromTo("#scene3 .s3-l-13",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B5 + 9.0);
+      tl.fromTo("#scene3 .s3-l-14",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B5 + 10.0);
+
+      /* ----- BEAT 6: Locked / next-login state (145 → 150s) ----- */
+      const B6 = S3 + 95.5; // 145.0
+
+      // Next-login command + master pw prompt re-appears
+      tl.fromTo("#scene3 .s3-l-15",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B6);
+      tl.fromTo("#scene3 .s3-l-16",
+        { autoAlpha: 0, clipPath: "inset(0 100% 0 0)" },
+        { autoAlpha: 1, clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power2.out" },
+        B6 + 1.0);
+
+      // Cursor blink at the prompt
+      tl.to("#scene3 .s3-cursor", { opacity: 0, duration: 0.5, ease: "steps(1)", repeat: 4, yoyo: true }, B6 + 1.8);
+
+      // Final "VAULT LOCKED" overlay glides in over the prompt for emphasis
+      tl.to("#ovLocked", { autoAlpha: 1, duration: 0.6, ease: "power2.out" }, B6 + 2.0);
+      tl.from("#ovLocked .s3-lock-svg", { scale: 0.5, opacity: 0, duration: 0.9, ease: "back.out(1.4)" }, B6 + 2.2);
+      tl.from("#ovLocked .s3-overlay-eyebrow", { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, B6 + 2.7);
+      tl.from("#ovLocked .s3-overlay-title", { y: 40, opacity: 0, scale: 0.9, duration: 0.9, ease: "expo.out" }, B6 + 3.0);
+      tl.from("#ovLocked .s3-overlay-sub", { y: 16, opacity: 0, duration: 0.6, ease: "power2.out" }, B6 + 3.8);
+
+      /* ===== Transition 3: blur crossfade (T = 149.0s) ===== */
+      const T3 = 149.0;
+      tl.set("#scene4", { visibility: "visible", filter: "blur(10px)", scale: 0.97 }, T3);
+      tl.to("#scene3", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.5, ease: "power2.inOut" }, T3);
+      tl.to("#scene4", { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.5, ease: "power2.inOut" }, T3 + 0.1);
+      tl.set("#scene3", { visibility: "hidden" }, T3 + 0.7);
+
+      /* =====================================================
+         SCENE 4 — WHAT AGAIN  (~149.5 → 180s) — narration ~28s
+         ===================================================== */
+      const S4 = 149.5;
+
+      tl.from("#scene4 .corner-label", { y: -16, opacity: 0, duration: 0.5, ease: "power2.out", stagger: 0.10 }, S4);
+
+      // Gorilla ASCII reveals row by row (vertical clip)
+      tl.from("#scene4 .s4-ascii", {
+        clipPath: "inset(0 0 100% 0)", y: 20, duration: 1.4, ease: "power3.out"
+      }, S4 + 0.20);
+
+      // Title slams in
+      tl.from("#scene4 .s4-title", {
+        clipPath: "inset(0 100% 0 0)", y: 20, duration: 1.0, ease: "expo.out"
+      }, S4 + 1.4);
+
+      tl.from("#scene4 .s4-tag", { y: 20, opacity: 0, duration: 0.7, ease: "power2.out" }, S4 + 2.4);
+
+      tl.from("#scene4 .s4-stack span", {
+        y: 16, opacity: 0, duration: 0.5, ease: "power2.out", stagger: 0.18
+      }, S4 + 3.2);
+
+      tl.from("#scene4 .s4-foot", { y: 14, opacity: 0, duration: 0.6, ease: "power2.out" }, S4 + 4.6);
+
+      // Final fade to black
+      tl.to("#fadeOut", { opacity: 1, duration: 1.2, ease: "power2.in" }, 178.5);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

@@ -25,7 +25,7 @@ exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
 echo "===== install.sh run: $(date) =====" >> "$LOG_FILE"
 
 # ywizz TUI helpers — purple accent for status lines
-source "$SCRIPT_DIR/lib/ywizz/ywizz.sh"
+source "$SCRIPT_DIR/src/lib/ywizz/ywizz.sh"
 accent_color="$C7"
 
 # Section header with blank-line separator and ywizz tree/diamond prefix.

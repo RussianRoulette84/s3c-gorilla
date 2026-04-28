@@ -1600,7 +1600,7 @@ Lives at `src/install.sh`. Does only:
 - Set `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`,
   `REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"`, `SRC_DIR="$SCRIPT_DIR"`,
   plus `BIN_DIR`, `SHARE_DIR`, `CONFIG_DIR`, `CONFIG_FILE`, `BUILD_DIR`.
-- Source `$REPO_ROOT/lib/ywizz/ywizz.sh` for TUI helpers.
+- Source `$REPO_ROOT/src/lib/ywizz/ywizz.sh` for TUI helpers.
 - Prime sudo + sudo-keepalive.
 - Source `$SRC_DIR/setup.sh` (orchestrator).
 - Print final "INSTALLED" banner + cheatsheet (or delegate to

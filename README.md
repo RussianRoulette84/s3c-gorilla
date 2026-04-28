@@ -11,6 +11,9 @@
 
 # s3c-gorilla
 
+[![Demo](docs/screenshots.thumnail.png)](https://example.com/videos/s3c-gorilla-demo.mp4)
+
+
 A `macOS toolkit` that wires everything together using best practices in a `secure` but still `convenient` way.
 
 It puts every SSH key, `.env`, and 2FA code behind an encrypted vault and injects secrets into memory with TouchID (after entering master password at least once).
