@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12] - 2026-06-02
+
+### Added
+- **env-gorilla multi-project mode** — `env-gorilla a,b,c -- cmd` fetches every listed `.env` under a single master-password prompt, merges them in caller-supplied order (later projects override earlier ones for duplicate keys), and wraps the merged result as ONE chip-blob keyed by the sorted joined name. One Touch ID unlocks the whole set on subsequent runs. Single-project syntax unchanged.
+- `normalize_project_list` and `iter_project_list` helpers — sort+dedupe for the cache key, original-order iteration for kdbx fetches.
+- `--clear` now accepts the same comma syntax (`env-gorilla --clear llm-docker,slav-ai` clears the combined blob).
+
+### Changed
+- A missing kdbx entry in a multi-project list no longer aborts the whole call — emits a stderr warning and continues with the rest. Single-project mode behavior is unchanged (missing entry still fails).
+
+### Security
+- One master-password prompt + one Touch ID per merged-blob set, regardless of how many projects are combined. Same per-decrypt biometry-gated SE semantics as before.
+
 ## [0.11] - 2026-04-24
 
 I will write myself thanks.

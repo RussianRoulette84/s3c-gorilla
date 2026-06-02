@@ -46,7 +46,7 @@ elif [[ -f "$SCRIPT_DIR/config.example" ]]; then
 fi
 DB_PATH="${GORILLA_DB:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/KeePassKeePassDB.kdbx}"
 
-cat << 'EOF' | zsh "$SCRIPT_DIR/lib/ywizz/colorize.sh" -s 1 -e 20
+cat << 'EOF' | zsh "$SCRIPT_DIR/src/lib/ywizz/colorize.sh" -s 1 -e 20
     ⢀⣠⣴⠶⠚⠛⢶⣄
     ⢸⣿⣿⣿⡆  ⠙⢷⣄
    ⣰⣿⣿⣿⣿⣿⣿⣷⣶⣶⣿⣦⡀
@@ -102,8 +102,8 @@ info "Cache → ~/Library/Caches/s3c-gorilla/"
 # Prime sudo so every sudo-install in steps 4/5/10 is prompt-free (and the
 # godfather only appears at most once, on the initial prompt).
 if ! sudo -n true 2>/dev/null; then
- if [[ -r "$SCRIPT_DIR/lib/godfather.sh" ]]; then
- source "$SCRIPT_DIR/lib/godfather.sh"
+ if [[ -r "$SCRIPT_DIR/src/lib/godfather.sh" ]]; then
+ source "$SCRIPT_DIR/src/lib/godfather.sh"
  show_godfather root
  fi
  sudo -v
@@ -145,25 +145,25 @@ section "[4/11] Installing tools"
 # location BEFORE installing the shim, so the shim can find the package
 # under /usr/local/share/s3c-gorilla/fs_gorilla/.
 sudo mkdir -p /usr/local/share/s3c-gorilla
-sudo rm -rf /usr/local/share/s3c-gorilla/fs_gorilla # purge stale
-sudo cp -R "$SRC_DIR/fs_gorilla" /usr/local/share/s3c-gorilla/fs_gorilla
-success "fs_gorilla/ package → /usr/local/share/s3c-gorilla/fs_gorilla"
+# sudo rm -rf /usr/local/share/s3c-gorilla/fs_gorilla # purge stale
+# sudo cp -R "$SRC_DIR/fs_gorilla" /usr/local/share/s3c-gorilla/fs_gorilla
+# success "fs_gorilla/ package → /usr/local/share/s3c-gorilla/fs_gorilla"
 
 # CLIs → /usr/local/bin (owned by root, world-executable)
-for tool in env-gorilla otp-gorilla ssh-gorilla.sh llm-gorilla fs-gorilla; do
- sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
- success "$tool → $BIN_DIR/$tool"
-done
+# for tool in env-gorilla otp-gorilla ssh-gorilla.sh llm-gorilla fs-gorilla; do
+#  sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
+#  success "$tool → $BIN_DIR/$tool"
+# done
 
 # Sourced helpers → /usr/local/share/s3c-gorilla (readable libs, not $PATH)
-sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/lib/godfather.sh" "$SHARE_DIR/godfather.sh"
-sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/lib/banners.sh" "$SHARE_DIR/banners.sh"
-sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/lib/drunken-bishop.sh" "$SHARE_DIR/drunken-bishop.sh"
-sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/lib/ywizz/colorize.sh" "$SHARE_DIR/colorize.sh"
-success "godfather.sh → $SHARE_DIR/godfather.sh"
-success "banners.sh → $SHARE_DIR/banners.sh"
-success "drunken-bishop.sh → $SHARE_DIR/drunken-bishop.sh"
-success "colorize.sh → $SHARE_DIR/colorize.sh"
+sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/godfather.sh" "$SHARE_DIR/godfather.sh"
+sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/banners.sh" "$SHARE_DIR/banners.sh"
+sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/drunken-bishop.sh" "$SHARE_DIR/drunken-bishop.sh"
+sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/ywizz/colorize.sh" "$SHARE_DIR/colorize.sh"
+success "godfather.sh → $SHARE_DIR/src/lib/godfather.sh"
+success "banners.sh → $SHARE_DIR/src/lib/banners.sh"
+success "drunken-bishop.sh → $SHARE_DIR/src/lib/drunken-bishop.sh"
+success "colorize.sh → $SHARE_DIR/src/lib/ywizz/colorize.sh"
 
 # ----------------------------------------------------------
 # Step 5: Detect Touch ID and install touchid-gorilla
@@ -577,7 +577,7 @@ EOF
 
  if [[ ${#SELECTED[@]} -gt 0 ]]; then
  # Prompt master pw interactively (no blob-retrieve anymore).
- source "$SCRIPT_DIR/lib/godfather.sh" 2>/dev/null
+ source "$SCRIPT_DIR/src/lib/godfather.sh" 2>/dev/null
  command -v show_godfather &>/dev/null && show_godfather master
  local GORILLA_PW
  printf '🔐 KeePass master password: '

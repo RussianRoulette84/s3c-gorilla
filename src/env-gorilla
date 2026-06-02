@@ -6,10 +6,15 @@
 ##
 ## Usage:
 ##   env-gorilla <project> -- <command>
-##   env-gorilla project_x -- uvicorn src.api.app:app --reload --port 8000
-##   env-gorilla --list          # show available projects
-##   env-gorilla --clear         # wipe all env blobs from /tmp
-##   env-gorilla --clear <proj>  # wipe one project's blob
+##   env-gorilla <p1>,<p2>,<p3> -- <command>     # merge several .envs into ONE blob
+##   env-gorilla --list                           # show available projects
+##   env-gorilla --clear                          # wipe all env blobs from /tmp
+##   env-gorilla --clear <project[,<p2>,...]>     # wipe one (combined) blob
+##
+## Multi-project mode merges every listed project's .env into a single
+## chip-wrapped blob keyed by the sorted joined name (e.g. a+b+c.blob),
+## so one Touch ID unlocks the whole set on subsequent runs. The user's
+## listed order controls duplicate-key precedence (later projects win).
 ##########################################################################################
 
 GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
@@ -24,6 +29,21 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 # ----------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------
+
+# Sort + dedupe a comma-separated project list, return it joined with '+'.
+# Example:  "slav-ai,llm-docker"  →  "llm-docker+slav-ai"
+# Same input in different order maps to the same key, so the cached blob
+# is reused regardless of how the caller orders the projects.
+normalize_project_list() {
+    echo "$1" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | sort -u | tr '\n' '+' | sed 's/+$//'
+}
+
+# Iterate a comma-separated project list in the caller's original order
+# (not sorted). Used when fetching .envs so the caller's later entries
+# override earlier ones for duplicate keys.
+iter_project_list() {
+    echo "$1" | tr ',' '\n' | sed '/^[[:space:]]*$/d'
+}
 
 ask_master_pw() {
     command -v show_master_banner &>/dev/null && show_master_banner
@@ -42,48 +62,77 @@ kdbx_extract_env() {
 }
 
 unwrap_blob() {
-    local project="$1"
+    local key="$1"
     command -v show_touchid &>/dev/null && show_touchid
-    "$GORILLA_TOUCHID" unwrap "env-$project" 2>/dev/null
+    "$GORILLA_TOUCHID" unwrap "env-$key" 2>/dev/null
 }
 
+# Fetch + merge .envs for every project in the comma list under a single
+# master-password prompt, wrap the merged result into a chip-blob keyed
+# by the normalized name, then echo the merged stream.
 bootstrap_and_get() {
-    local project="$1"
-    local pw env_data
+    local project_list="$1"
+    local key="$2"
+    local pw merged env_data proj missing=()
+
     pw=$(ask_master_pw)
     [[ -z "$pw" ]] && { echo "env-gorilla: no password entered" >&2; return 1; }
 
-    env_data=$(kdbx_extract_env "$pw" "$project")
-    if [[ -z "$env_data" ]]; then
-        echo "env-gorilla: couldn't extract $GORILLA_ENV_GROUP/$project/.env (wrong password or missing entry)" >&2
+    merged=""
+    while IFS= read -r proj; do
+        env_data=$(kdbx_extract_env "$pw" "$proj")
+        if [[ -z "$env_data" ]]; then
+            missing+=("$proj")
+            continue
+        fi
+        if [[ -n "$merged" ]]; then
+            merged+=$'\n'
+        fi
+        merged+="$env_data"
+    done < <(iter_project_list "$project_list")
+
+    # Warn about any missing kdbx entries but continue if at least one
+    # project loaded — saves the user from a typo nuking the whole launch.
+    if (( ${#missing[@]} > 0 )); then
+        echo "env-gorilla: warning — couldn't extract $GORILLA_ENV_GROUP/{$(IFS=,; echo "${missing[*]}")}/.env (skipped)" >&2
+    fi
+
+    if [[ -z "$merged" ]]; then
+        echo "env-gorilla: no .env data extracted from any listed project" >&2
         unset pw
         return 1
     fi
 
-    if ! printf '%s' "$env_data" | "$GORILLA_TOUCHID" wrap "env-$project" &>/dev/null; then
+    if ! printf '%s' "$merged" | "$GORILLA_TOUCHID" wrap "env-$key" &>/dev/null; then
         echo "env-gorilla: failed to chip-wrap env blob" >&2
-        unset pw env_data
+        unset pw merged
         return 1
     fi
     unset pw
-    printf '%s' "$env_data"
-    unset env_data
+    printf '%s' "$merged"
+    unset merged
 }
 
 get_env() {
-    local project="$1"
-    local blob_path="/tmp/s3c-gorilla/env-$project.blob"
+    local project_list="$1"
+    local key
+    key=$(normalize_project_list "$project_list")
+    if [[ -z "$key" ]]; then
+        echo "env-gorilla: empty project list" >&2
+        return 1
+    fi
+    local blob_path="/tmp/s3c-gorilla/env-$key.blob"
     local env_data
 
     if [[ -f "$blob_path" ]]; then
-        env_data=$(unwrap_blob "$project")
+        env_data=$(unwrap_blob "$key")
         if [[ -n "$env_data" ]]; then
             printf '%s' "$env_data"
             return 0
         fi
         echo "env-gorilla: Touch ID cancelled or blob corrupted — re-bootstrapping" >&2
     fi
-    bootstrap_and_get "$project"
+    bootstrap_and_get "$project_list" "$key"
 }
 
 # ----------------------------------------------------------
@@ -100,8 +149,10 @@ fi
 
 if [[ "$1" == "--clear" ]]; then
     if [[ -n "$2" ]]; then
-        "$GORILLA_TOUCHID" wrap-clear "env-$2"
-        echo "Cleared env-$2.blob"
+        clear_key=$(normalize_project_list "$2")
+        "$GORILLA_TOUCHID" wrap-clear "env-$clear_key"
+        echo "Cleared env-$clear_key.blob"
+        unset clear_key
     else
         shopt -s nullglob
         for f in /tmp/s3c-gorilla/env-*.blob; do
@@ -118,14 +169,14 @@ env-gorilla — secrets from the vault, not from the disk
 
 Usage:
   env-gorilla <project> -- <command>
-  env-gorilla --list                 Show available projects
-  env-gorilla --clear                Wipe all env blobs from /tmp
-  env-gorilla --clear <project>      Wipe one project's blob
+  env-gorilla <p1>,<p2>,<p3> -- <command>     Merge multiple .envs into ONE blob
+  env-gorilla --list                           Show available projects
+  env-gorilla --clear                          Wipe all env blobs from /tmp
+  env-gorilla --clear <p1[,p2,...]>            Wipe one (combined) blob
 
 Examples:
   env-gorilla project_x -- python main.py
-  env-gorilla project_y -- npm run dev
-  env-gorilla project_z -- uvicorn src.api.app:app --reload
+  env-gorilla llm-docker,slav-ai -- bash       # one master pw → one Touch ID for both
 EOF
     exit 1
 fi
