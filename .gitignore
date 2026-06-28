@@ -1,4 +1,13 @@
+# OS metadata
 .DS_Store
+.Trash-*
+.Trash/
+.Trashes/
+.Spotlight-V100/
+.fseventsd/
+Thumbs.db
+
+# MiSC
 *.o
 touchid-gorilla
 touchid-gorilla.entitlements

@@ -161,8 +161,9 @@ fuzzy_match() {
 show_one() {
     local svc="$1"
     local val code
-    command -v show_touchid &>/dev/null && show_touchid
+    command -v show_touchid &>/dev/null && show_touchid   # bishop walk in background
     val=$("$GORILLA_TOUCHID" unwrap "otp-$svc" 2>/dev/null)
+    command -v stop_touchid &>/dev/null && stop_touchid    # auto-stop on scan return
     if [[ -z "$val" ]]; then
         echo "otp-gorilla: unwrap cancelled or blob missing for $svc" >&2
         return 1
@@ -209,7 +210,7 @@ if [[ -z "$1" ]]; then
     fi
     echo "All OTP codes:"
     echo "────────────────────────────────"
-    command -v show_touchid &>/dev/null && show_touchid
+    command -v show_touchid &>/dev/null && show_touchid   # bishop walk in background
     while IFS= read -r svc; do
         [[ -z "$svc" ]] && continue
         val=$("$GORILLA_TOUCHID" unwrap "otp-$svc" 2>/dev/null)
@@ -217,6 +218,7 @@ if [[ -z "$1" ]]; then
         unset val
         printf "  %-24s  %s\n" "$svc" "${code:-—}"
     done < <(list_wrapped)
+    command -v stop_touchid &>/dev/null && stop_touchid    # auto-stop after last code
     echo "────────────────────────────────"
     exit 0
 fi

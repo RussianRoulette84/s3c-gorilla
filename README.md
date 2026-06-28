@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-0.10-green.svg)
+![Version](https://img.shields.io/badge/version-0.13-green.svg)
 ![macOS](https://img.shields.io/badge/macOS-12%2B-black?logo=apple&logoColor=white)
 ![KeePassXC](https://img.shields.io/badge/KeePassXC-2.7%2B-69A626?logo=keepassxc&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift-5.9%2B-FA7343?logo=swift&logoColor=white)
@@ -202,7 +202,7 @@ complete reference.
 One-liner:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/RussianRoulette84/s3c-gorilla/master/src/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/RussianRoulette84/s3c-gorilla/master/install.sh)
 ```
 
 **Prefer to inspect before running?** Recommended for a tool that touches your secrets.
@@ -210,8 +210,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/RussianRoulette84/s3c-gorill
 ```bash
 git clone https://github.com/RussianRoulette84/s3c-gorilla.git
 cd s3c-gorilla
-less src/install.sh          # read first, then:
-./src/install.sh
+less install.sh          # read first, then:
+./install.sh
 ```
 
 The installer needs `sudo` once (binaries land in `/usr/local/bin`

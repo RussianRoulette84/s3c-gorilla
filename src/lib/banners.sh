@@ -23,13 +23,22 @@ show_master_banner() {
 EOF
 }
 
-# Touch ID prompt: use drunken-bishop animation if available, else one-liner.
+# Touch ID prompt: START the drunken-bishop animation in the BACKGROUND so it
+# overlaps with the scan. Pair every show_touchid with stop_touchid after the
+# Touch ID helper returns. Falls back to a one-liner if the animation is absent.
 show_touchid() {
     local bishop="/usr/local/share/s3c-gorilla/drunken-bishop.sh"
+    [[ -r "$bishop" ]] || bishop="${BASH_SOURCE[0]%/*}/drunken-bishop.sh"  # repo fallback
     if [[ -r "$bishop" ]]; then
         source "$bishop"
-        command -v show_drunken_bishop &>/dev/null && show_drunken_bishop
+        command -v db_start &>/dev/null && db_start
     else
         printf "  Touch ID → tap your finger\n" >&2
     fi
+}
+
+# Stop the background animation (and play the unlock flourish). Safe no-op if the
+# animation never started.
+stop_touchid() {
+    command -v db_stop &>/dev/null && db_stop
 }

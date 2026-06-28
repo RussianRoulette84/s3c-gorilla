@@ -68,9 +68,11 @@ kdbx_extract_env() {
 }
 
 unwrap_blob() {
-    local key="$1"
-    command -v show_touchid &>/dev/null && show_touchid
-    "$GORILLA_TOUCHID" unwrap "env-$key" 2>/dev/null
+    local key="$1" out
+    command -v show_touchid &>/dev/null && show_touchid   # bishop walk in background
+    out=$("$GORILLA_TOUCHID" unwrap "env-$key" 2>/dev/null)
+    command -v stop_touchid &>/dev/null && stop_touchid    # auto-stop on scan return
+    printf '%s' "$out"
 }
 
 # Fetch + merge .envs for every project in the comma list under a single

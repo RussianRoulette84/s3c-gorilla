@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13] - 2026-06-28
+
+### Added
+- **Dual-mode (Touch ID *and* password) end to end.** Tools auto-detect via the presence of the `touchid-gorilla` binary (`have_chip`). On no-Secure-Enclave machines (e.g. Intel/Hackintosh) `env-gorilla` injects `.env`s straight from the kdbx each run (no chip-wrap), and `otp-gorilla` computes codes via `keepassxc-cli show -t`.
+- **Concurrent unlock animation.** `drunken-bishop.sh` gained a background `db_start` / `db_stop` API so the bishop walk runs *during* the Touch ID scan and auto-stops on return, with a 🔒→🔓 unlock flourish. Wired into `env-gorilla` / `otp-gorilla` unwrap paths.
+
+### Changed
+- **Installer Touch ID detection** now uses a real LocalAuthentication `canEvaluatePolicy` probe (IOKit `AppleBiometricSensor` alone false-positives on Hackintoshes/VMs). Password-mode machines skip the SSH-agent step and self-heal a stale chip-only `GORILLA_SSH_MODE` in user config.
+- **Installer trimmed to 10 steps** — removed the `fs-gorilla` LaunchDaemon step and its orphaned plist; step 4 now installs only the CLIs that exist (`env-gorilla`, `otp-gorilla`, `ssh-gorilla.sh`).
+- **End-of-install cheatsheet** rebuilt: left-bar layout (no misaligning right wall), orange tool names, every real command with a realistic example.
+- `config.example` ships `GORILLA_SSH_MODE` commented out (set by the installer only in Touch ID mode); fixed the example path (`src/setup/`) and default DB name (`KeePassDB.kdbx`).
+
+### Fixed
+- README install one-liner pointed at `master/src/install.sh` (404) — corrected to `master/install.sh`.
+- `godfather.sh` never colorized: wrong relative path + an `[[ -x ]]` guard on a `0644` (readable, not executable) `colorize.sh`; now resolves correctly and guards on `[[ -r ]]`.
+- Installer success labels and the SSH-bail warning no longer print wrong paths or reference removed tools.
+
 ## [0.12] - 2026-06-02
 
 ### Added

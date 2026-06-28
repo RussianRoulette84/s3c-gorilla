@@ -77,7 +77,7 @@ printf "%b%s%s%b%b%b\n\n" "$C7" "$TREE_TOP" "$DIAMOND_FILLED" "$BOLD$C7" "s3c-go
 # ----------------------------------------------------------
 # Step 1: Check/install KeePassXC
 # ----------------------------------------------------------
-section "[1/11] KeePassXC"
+section "[1/10] KeePassXC"
 info "KeePassXC DB: $DB_PATH"
 if ! command -v keepassxc-cli &>/dev/null; then
  info "Installing KeePassXC via Homebrew..."
@@ -94,7 +94,7 @@ fi
 # ----------------------------------------------------------
 # Step 2: Privileged install prep
 # ----------------------------------------------------------
-section "[2/11] Install targets"
+section "[2/10] Install targets"
 info "CLIs → $BIN_DIR"
 info "Helpers → $SHARE_DIR"
 info "Logs → ~/Library/Logs/s3c-gorilla/"
@@ -124,7 +124,7 @@ success "Ready"
 # ----------------------------------------------------------
 # Step 3: Deploy user config (preserve if it already exists)
 # ----------------------------------------------------------
-section "[3/11] User config"
+section "[3/10] User config"
 mkdir -p "$CONFIG_DIR"
 if [[ -f "$CONFIG_FILE" ]]; then
  success "Preserved existing: $CONFIG_FILE"
@@ -140,19 +140,11 @@ fi
 # ----------------------------------------------------------
 # Step 4: Install tools
 # ----------------------------------------------------------
-section "[4/11] Installing tools"
+section "[4/10] Installing tools"
 
-# fs-gorilla is now a Python package — copy `src/fs_gorilla/` to a shared
-# location BEFORE installing the shim, so the shim can find the package
-# under /usr/local/share/s3c-gorilla/fs_gorilla/.
-sudo mkdir -p /usr/local/share/s3c-gorilla
-# sudo rm -rf /usr/local/share/s3c-gorilla/fs_gorilla # purge stale
-# sudo cp -R "$SRC_DIR/fs_gorilla" /usr/local/share/s3c-gorilla/fs_gorilla
-# success "fs_gorilla/ package → /usr/local/share/s3c-gorilla/fs_gorilla"
-
-# CLIs → /usr/local/bin (owned by root, world-executable). Only ship tools that
-# actually exist in src/ — llm-gorilla/fs-gorilla aren't part of this build, so
-# don't list them (a missing source under `set -e` would abort the installer).
+# CLIs → /usr/local/bin (owned by root, world-executable). Only ship the CLIs
+# that actually exist in src/ (a missing source under `set -e` would abort the
+# installer).
 for tool in env-gorilla otp-gorilla ssh-gorilla.sh; do
  if [[ -f "$SRC_DIR/$tool" ]]; then
  sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
@@ -167,15 +159,15 @@ sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/godfather.sh" "$SHARE
 sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/banners.sh" "$SHARE_DIR/banners.sh"
 sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/drunken-bishop.sh" "$SHARE_DIR/drunken-bishop.sh"
 sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/ywizz/colorize.sh" "$SHARE_DIR/colorize.sh"
-success "godfather.sh → $SHARE_DIR/src/lib/godfather.sh"
-success "banners.sh → $SHARE_DIR/src/lib/banners.sh"
-success "drunken-bishop.sh → $SHARE_DIR/src/lib/drunken-bishop.sh"
-success "colorize.sh → $SHARE_DIR/src/lib/ywizz/colorize.sh"
+success "godfather.sh → $SHARE_DIR/godfather.sh"
+success "banners.sh → $SHARE_DIR/banners.sh"
+success "drunken-bishop.sh → $SHARE_DIR/drunken-bishop.sh"
+success "colorize.sh → $SHARE_DIR/colorize.sh"
 
 # ----------------------------------------------------------
 # Step 5: Detect Touch ID and install touchid-gorilla
 # ----------------------------------------------------------
-section "[5/11] Touch ID"
+section "[5/10] Touch ID"
 
 HAS_TOUCHID=false
 
@@ -334,7 +326,7 @@ fi
 # ----------------------------------------------------------
 # Step 6: SSH config check
 # ----------------------------------------------------------
-section "[6/11] SSH config"
+section "[6/10] SSH config"
 
 SSH_CONFIG="$HOME/.ssh/config"
 if [[ -f "$SSH_CONFIG" ]]; then
@@ -356,7 +348,7 @@ fi
 # ----------------------------------------------------------
 # Step 7: Shell integration
 # ----------------------------------------------------------
-section "[7/11] Shell integration"
+section "[7/10] Shell integration"
 
 SSH_GORILLA_LINE='source /usr/local/bin/ssh-gorilla.sh'
 SSH_AUTH_SOCK_LINE='export SSH_AUTH_SOCK="$HOME/.s3c-gorilla/agent.sock"'
@@ -391,7 +383,7 @@ fi
 # ----------------------------------------------------------
 # Step 8: PATH check
 # ----------------------------------------------------------
-section "[8/11] PATH"
+section "[8/10] PATH"
 
 if echo ":$PATH:" | grep -q ":/usr/local/bin:"; then
  success "/usr/local/bin in PATH"
@@ -403,7 +395,7 @@ fi
 # ----------------------------------------------------------
 # Step 9: Database check
 # ----------------------------------------------------------
-section "[9/11] KeePassXC database"
+section "[9/10] KeePassXC database"
 
 if [[ -f "$DB_PATH" ]]; then
  success "Found: $(basename "$DB_PATH")"
@@ -413,88 +405,9 @@ else
 fi
 
 # ----------------------------------------------------------
-# Step 10: fs-gorilla — filesystem tripwire (LaunchDaemon)
+# Step 10: SSH keys + LaunchAgent — LAST STEP
 # ----------------------------------------------------------
-section "[10/11] fs-gorilla LaunchDaemon"
-
-FS_GORILLA_BIN="$BIN_DIR/fs-gorilla"
-if [[ ! -x "$FS_GORILLA_BIN" ]]; then
- # The daemon plist's ExecStart is $FS_GORILLA_BIN; loading it (and pointing
- # the FDA grant at it) only makes sense once that binary is actually
- # installed. It isn't part of this build, so skip the whole step rather than
- # bootstrap a daemon that can't spawn and tell the user to drag a missing
- # file into Full Disk Access.
- warn "fs-gorilla not installed at $FS_GORILLA_BIN — skipping its LaunchDaemon"
- skip "fs-gorilla isn't part of this build; nothing to load."
-elif [[ ! -x /usr/bin/eslogger ]]; then
- warn "/usr/bin/eslogger missing — requires macOS 13+ (Ventura)"
- skip "Skipping LaunchDaemon load — fs-gorilla CLI still works for ad-hoc runs"
-else
- if ! command -v terminal-notifier &>/dev/null; then
- info "Installing terminal-notifier via Homebrew..."
- brew install terminal-notifier
- fi
-
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Load fs-gorilla as a LaunchDaemon now? [Y/n] " -n 1 -r
- echo ""
- if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
- # A running daemon means eslogger is live, which means FDA is already
- # granted — we can skip the whole System Settings song-and-dance.
- FDA_ALREADY_GRANTED=false
- if sudo launchctl print "system/com.slav-it.s3c-gorilla" 2>/dev/null \
- | awk '/^[[:space:]]*state =/ {exit !($3 == "running")}'; then
- FDA_ALREADY_GRANTED=true
- fi
-
- info "Installing LaunchDaemon plist..."
- sudo install -m 0644 -o root -g wheel \
- "$SRC_DIR/com.slav-it.s3c-gorilla.plist" \
- /Library/LaunchDaemons/com.slav-it.s3c-gorilla.plist
-
- info "Loading daemon..."
- # Bootout via both label-form and plist-path-form — the latter is more
- # reliable when launchd has a stale reference to the old plist inode.
- # Without this, re-running install.sh often fails with
- # "Bootstrap failed: 5: Input/output error".
- sudo launchctl bootout system/com.slav-it.s3c-gorilla 2>/dev/null || true
- sudo launchctl bootout system /Library/LaunchDaemons/com.slav-it.s3c-gorilla.plist 2>/dev/null || true
- sleep 1
- sudo launchctl enable system/com.slav-it.s3c-gorilla
- sudo launchctl bootstrap system /Library/LaunchDaemons/com.slav-it.s3c-gorilla.plist
-
- success "fs-gorilla loaded (label: com.slav-it.s3c-gorilla)"
-
- if $FDA_ALREADY_GRANTED; then
- success "Full Disk Access already granted — skipping System Settings flow"
- else
- # macOS has no API to programmatically trigger the FDA consent dialog
- # for a LaunchDaemon — a root daemon that gets TCC-denied just exits
- # silently. Best we can do is deep-link to the FDA pane and reveal
- # the binary in Finder so the user can drag-drop it into the list.
- warn "One-time Full Disk Access grant required for eslogger"
- item "Opening System Settings → Privacy & Security → Full Disk Access..."
- item "Finder will also reveal $BIN_DIR/fs-gorilla — drag it into the list."
- open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || \
- open "/System/Library/PreferencePanes/Security.prefPane" 2>/dev/null || true
- sleep 1
- open -R "$BIN_DIR/fs-gorilla" 2>/dev/null || true
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Press Enter once you've toggled fs-gorilla ON in Full Disk Access... " _
- info "Restarting daemon so eslogger picks up the TCC grant..."
- sudo launchctl kickstart -k "system/com.slav-it.s3c-gorilla" 2>/dev/null || \
- sudo "$BIN_DIR/fs-gorilla" restart
- success "fs-gorilla restarted"
- fi
- else
- skip "(run later: sudo fs-gorilla start)"
- fi
-fi
-
-# ----------------------------------------------------------
-# Step 11: SSH keys + LaunchAgent — LAST STEP
-# ----------------------------------------------------------
-section "[11/11] SSH mode + agent setup"
+section "[10/10] SSH mode + agent setup"
 
 AGENT_DIR="$HOME/.s3c-gorilla"
 PUB_DIR="$AGENT_DIR/pubkeys"
@@ -729,10 +642,17 @@ EOF
 if ! $HAS_TOUCHID; then
  skip "SSH agent needs Touch ID / Secure Enclave — not available in password mode."
  item "Your existing ~/.ssh keys keep working as-is; env-gorilla/otp-gorilla are unaffected."
+ # Password mode has no SSH agent — comment out any active GORILLA_SSH_MODE so a
+ # chip-only value (e.g. inherited from config.example) can't imply a mode that
+ # cannot run here. Idempotent: only touches an uncommented line.
+ if [[ -f "$CONFIG_FILE" ]] && grep -q '^GORILLA_SSH_MODE=' "$CONFIG_FILE"; then
+ sed -i '' 's/^GORILLA_SSH_MODE=/#GORILLA_SSH_MODE=/' "$CONFIG_FILE"
+ item "Disabled GORILLA_SSH_MODE in your config (chip-only, no effect in password mode)."
+ fi
 elif install_ssh_step; then
  success "SSH setup complete (mode: $(grep '^GORILLA_SSH_MODE=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"'))"
 else
- warn "SSH setup bailed — env/otp/fs/llm tools still work. Re-run ./install.sh to retry."
+ warn "SSH setup bailed — env-gorilla / otp-gorilla still work. Re-run ./install.sh to retry."
 fi
 
 # ----------------------------------------------------------
@@ -746,48 +666,58 @@ else
 fi
 printf "%b%s%s%b%bINSTALLED — %s%b\n\n" "$C7" "$TREE_BOT" "$DIAMOND_FILLED" "$BOLD$C7" "" "$MODE_LABEL" "$RESET"
 
-# Cheatsheet — purple-accented box. Each row is padded to the box's 59-char
-# interior so borders line up. Use printf's `%-Ns` for left-pad to N chars.
-p()     { printf "%b%s%b\n"       "$C7" "$1"          "$RESET"; }
-p_row() { printf "%b│%-59s│%b\n"  "$C7" "$1"          "$RESET"; }
+# Cheatsheet — left-bar style (no right wall, so nothing can misalign). Each
+# command gets its own cyan line with a dim description under it — handles any
+# length. Theme: purple bar (C7), ORANGE bold tool names, pink section titles
+# (C8), cyan commands (C4), dim descriptions.
+cs_rule() { printf "%b%s%b\n" "$C7" "$1" "$RESET"; }
+cs_bar()  { printf "%b│%b\n" "$C7" "$RESET"; }
+cs_tool() { printf "%b│  %b%s%b %b%s%b\n" "$C7" "$BOLD$ORANGE" "$1" "$RESET" "$DIM" "$2" "$RESET"; }
+cs_sect() { printf "%b│  %b%s%b\n" "$C7" "$BOLD$C8" "$1" "$RESET"; }
+cs_ex()   { printf "%b│    %b%s%b\n" "$C7" "$C4" "$1" "$RESET"; }
+cs_desc() { printf "%b│      %b%s%b\n" "$C7" "$DIM" "$1" "$RESET"; }
+cs_line() { printf "%b│    %b%s%b\n" "$C7" "$C4" "$1" "$RESET"; }
 
-p "┌─────────────────────────────────────────────────────────┐"
-p_row ""
-p_row "  ssh-gorilla"
-p_row "    ssh myserver.com           auto-unlock + connect"
-p_row ""
-p_row "  env-gorilla"
-p_row "    env-gorilla app -- cmd     run with secrets"
-if $HAS_TOUCHID; then
- p_row "    env-gorilla --setup        setup Touch ID"
-else
- p_row "    env-gorilla --setup        configure password mode"
-fi
-p_row "    env-gorilla --list         list projects"
-p_row ""
-p_row "  otp-gorilla"
-p_row "    otp-gorilla                show all 2FA codes"
-p_row "    otp-gorilla Atlassian      copy one code"
-p_row ""
-p_row "  fs-gorilla"
-p_row "    fs-gorilla                 status"
-p_row "    fs-gorilla report          activity report / dashboard"
-p_row "    fs-gorilla dashboard       live tmux dashboard"
-p_row "    fs-gorilla logs -f         tail matches live"
-p_row "    sudo fs-gorilla restart    reload daemon"
-p_row ""
-p_row "  llm-gorilla"
-p_row "    llm-gorilla                live TUI: cpu/ram/net"
-p_row "    llm-gorilla status         one-shot snapshot"
-p_row "    llm-gorilla alerts         autonomous-start alerts"
-p_row ""
-p_row "  Config:"
-p_row "    ~/.config/s3c-gorilla/config"
-p_row ""
-p_row "  Adding .env to KeePassXC:"
-p_row '    keepassxc-cli add "$DB" "ENV/project_x"'
-p_row '    keepassxc-cli attachment-import "$DB" \'
-p_row '      "ENV/project_x" .env /path/to/.env'
-p_row ""
-p "└─────────────────────────────────────────────────────────┘"
+cs_rule "╭─────────────────────────────────────────────────"
+cs_bar
+cs_tool "ssh-gorilla" "— encrypted SSH, keys live in the vault (not on disk)"
+cs_ex   "ssh prod"
+cs_desc "unlock key from kdbx → connect as root@prod"
+cs_ex   "ssh deploy@project-host"
+cs_desc "explicit user, Touch ID per sign, no id_rsa on disk"
+cs_bar
+cs_tool "env-gorilla" "— inject .env secrets into a command, in memory"
+cs_ex   "env-gorilla project_a -- npm run dev"
+cs_desc "run with project_a's .env (never written to disk)"
+cs_ex   "env-gorilla project_a,project_b -- bash"
+cs_desc "merge several .envs into ONE launch (later wins on dupes)"
+cs_ex   "env-gorilla --list"
+cs_desc "list available projects in the vault"
+cs_ex   "env-gorilla --clear"
+cs_desc "wipe all cached env blobs from /tmp"
+cs_ex   "env-gorilla --clear project_a,project_b"
+cs_desc "wipe one combined blob"
+cs_bar
+cs_tool "otp-gorilla" "— 2FA / TOTP codes from the vault"
+cs_ex   "otp-gorilla"
+cs_desc "show all 2FA codes"
+cs_ex   "otp-gorilla github"
+cs_desc "one code (fuzzy match) → clipboard + macOS notification"
+cs_ex   "otp-gorilla --clear"
+cs_desc "wipe cached otp blobs from /tmp"
+cs_bar
+cs_sect "Config"
+cs_line "~/.config/s3c-gorilla/config"
+cs_desc "GORILLA_DB, ENV/2FA group names, SSH mode"
+cs_bar
+cs_sect "Add a .env to KeePassXC"
+cs_line 'keepassxc-cli add "$DB" "ENV/project_a"'
+cs_line 'keepassxc-cli attachment-import "$DB" \'
+cs_line '  "ENV/project_a" .env /path/to/.env'
+cs_bar
+cs_sect "Add a 2FA secret to KeePassXC"
+cs_line 'keepassxc-cli add "$DB" "2FA/github"'
+cs_desc "then add its TOTP seed in the KeePassXC app"
+cs_bar
+cs_rule "╰─────────────────────────────────────────────────"
 echo ""

@@ -13,8 +13,11 @@
 
 _GODFATHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 : "${GORILLA_COLORIZE:=/usr/local/share/s3c-gorilla/colorize.sh}"
-[[ -x "$GORILLA_COLORIZE" ]] || GORILLA_COLORIZE="$_GODFATHER_DIR/lib/ywizz/colorize.sh"
-[[ -x "$GORILLA_COLORIZE" ]] || GORILLA_COLORIZE="$_GODFATHER_DIR/colorize.sh"
+# godfather.sh lives in src/lib/ (repo) or .../share/s3c-gorilla/ (installed).
+# colorize.sh is at src/lib/ywizz/colorize.sh in the repo, or alongside it once
+# installed — try both so the art is colorized in either layout.
+[[ -r "$GORILLA_COLORIZE" ]] || GORILLA_COLORIZE="$_GODFATHER_DIR/ywizz/colorize.sh"
+[[ -r "$GORILLA_COLORIZE" ]] || GORILLA_COLORIZE="$_GODFATHER_DIR/colorize.sh"
 
 show_godfather() {
     local kind="${1:-master}"
@@ -30,7 +33,7 @@ show_godfather() {
             ;;
     esac
 
-    if [[ -x "$GORILLA_COLORIZE" ]]; then
+    if [[ -r "$GORILLA_COLORIZE" ]]; then
         cat << 'EOF' | zsh "$GORILLA_COLORIZE" -s 1 -e 13
     ⠀⠀⢀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
     ⢀⣠⣤⣼⣿⣿⣿⣾⣶⡤⠄⠀⠀⠀⠀⠀⠀⠀

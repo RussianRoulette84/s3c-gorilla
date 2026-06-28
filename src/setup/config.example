@@ -15,8 +15,10 @@ GORILLA_ENV_GROUP="ENV"
 # otp-gorilla reads from "$GORILLA_OTP_GROUP/<service>".
 GORILLA_OTP_GROUP="2FA"
 
-# SSH mode — picked at install time, persisted here.
+# SSH mode — set by install.sh during SSH setup, which only runs on Touch ID
+# machines. Leave this commented on password-mode machines (no Secure Enclave):
+# there's no SSH agent there, so the value would be misleading.
 #   chip-wrap : keep your existing SSH key; master pw once per boot extracts
 #               it, chip-wraps into /tmp, Touch ID per sign.
 #   se-born   : chip-generated key, never leaves the chip, per-sign Touch ID.
-GORILLA_SSH_MODE="chip-wrap"
+#GORILLA_SSH_MODE="chip-wrap"
