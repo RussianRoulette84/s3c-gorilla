@@ -30,6 +30,12 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 # Helpers
 # ----------------------------------------------------------
 
+# True only when the Secure Enclave helper is actually installed. The installer
+# drops touchid-gorilla into place only on machines with a working SE, so its
+# presence is our mode signal. Without it we run password-only: extract from
+# kdbx on every call, no /tmp blob cache, no Touch ID — just the master pw.
+have_chip() { [[ -x "$GORILLA_TOUCHID" ]]; }
+
 # Sort + dedupe a comma-separated project list, return it joined with '+'.
 # Example:  "slav-ai,llm-docker"  →  "llm-docker+slav-ai"
 # Same input in different order maps to the same key, so the cached blob
@@ -103,10 +109,15 @@ bootstrap_and_get() {
         return 1
     fi
 
-    if ! printf '%s' "$merged" | "$GORILLA_TOUCHID" wrap "env-$key" &>/dev/null; then
-        echo "env-gorilla: failed to chip-wrap env blob" >&2
-        unset pw merged
-        return 1
+    # Cache into a chip-wrapped blob only when an SE is present. In password
+    # mode we skip the wrap and just hand back the merged env — the master pw
+    # prompt above is the only gate, re-asked on each run (no secure cache).
+    if have_chip; then
+        if ! printf '%s' "$merged" | "$GORILLA_TOUCHID" wrap "env-$key" &>/dev/null; then
+            echo "env-gorilla: failed to chip-wrap env blob" >&2
+            unset pw merged
+            return 1
+        fi
     fi
     unset pw
     printf '%s' "$merged"
@@ -121,6 +132,12 @@ get_env() {
         echo "env-gorilla: empty project list" >&2
         return 1
     fi
+    # Password-only mode: no chip to unwrap/cache with — extract fresh each run.
+    if ! have_chip; then
+        bootstrap_and_get "$project_list" "$key"
+        return
+    fi
+
     local blob_path="/tmp/s3c-gorilla/env-$key.blob"
     local env_data
 

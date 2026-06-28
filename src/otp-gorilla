@@ -34,6 +34,58 @@ ask_master_pw() {
     printf '%s' "$pw"
 }
 
+# True only when the Secure Enclave helper is installed (Touch ID machines).
+# Without it we run password-only: let KeePassXC compute the TOTP itself.
+have_chip() { [[ -x "$GORILLA_TOUCHID" ]]; }
+
+# Password mode — no chip, no /tmp blobs. One master-pw prompt, then KeePassXC
+# computes each entry's live TOTP via `show -t`. Mirrors the chip dispatch:
+# no arg = list all codes, an arg = fuzzy-match one (copy + notify).
+run_password_mode() {
+    local arg="$1" pw services svc code matches=() q_lower s_lower
+    pw=$(ask_master_pw)
+    [[ -z "$pw" ]] && { echo "otp-gorilla: no password entered" >&2; return 1; }
+    services=$(echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_OTP_GROUP/" -q 2>/dev/null | grep -v '/$')
+    if [[ -z "$services" ]]; then
+        echo "otp-gorilla: no entries in $GORILLA_OTP_GROUP/" >&2; unset pw; return 1
+    fi
+
+    if [[ -z "$arg" ]]; then
+        echo "All OTP codes:"
+        echo "────────────────────────────────"
+        while IFS= read -r svc; do
+            [[ -z "$svc" ]] && continue
+            code=$(echo "$pw" | keepassxc-cli show -t "$GORILLA_DB" "$GORILLA_OTP_GROUP/$svc" -q 2>/dev/null)
+            printf "  %-24s  %s\n" "$svc" "${code:-—}"
+        done <<< "$services"
+        echo "────────────────────────────────"
+        unset pw; return 0
+    fi
+
+    q_lower=$(echo "$arg" | tr '[:upper:]' '[:lower:]')
+    while IFS= read -r svc; do
+        [[ -z "$svc" ]] && continue
+        s_lower=$(echo "$svc" | tr '[:upper:]' '[:lower:]')
+        [[ "$s_lower" == *"$q_lower"* ]] && matches+=("$svc")
+    done <<< "$services"
+    if [[ ${#matches[@]} -eq 0 ]]; then
+        echo "otp-gorilla: no match for '$arg'. Available:" >&2
+        echo "$services" | sed 's/^/  /' >&2; unset pw; return 1
+    elif [[ ${#matches[@]} -gt 1 ]]; then
+        echo "otp-gorilla: multiple matches for '$arg':" >&2
+        printf '  %s\n' "${matches[@]}" >&2; unset pw; return 1
+    fi
+    svc="${matches[0]}"
+    code=$(echo "$pw" | keepassxc-cli show -t "$GORILLA_DB" "$GORILLA_OTP_GROUP/$svc" -q 2>/dev/null)
+    unset pw
+    if [[ -z "$code" ]]; then
+        echo "otp-gorilla: no TOTP configured for $svc" >&2; return 1
+    fi
+    echo "$svc: $code"
+    printf '%s' "$code" | pbcopy
+    command -v "$GORILLA_NOTIFIER" &>/dev/null && "$GORILLA_NOTIFIER" -title "OTP: $svc" -message "$code" &>/dev/null
+}
+
 # keepassxc-cli show returns the value of an attribute. Try both known TOTP
 # attribute names (newer "otp" → otpauth URI; older "TOTP-Secret" → base32).
 kdbx_extract_totp_value() {
@@ -141,6 +193,13 @@ if [[ "$1" == "--clear" ]]; then
     done
     echo "otp-gorilla: cleared $count otp blob(s)"
     exit 0
+fi
+
+# No Secure Enclave → password mode (KeePassXC computes the TOTP). Handles both
+# the no-arg list and the fuzzy-match-one cases, then exits.
+if ! have_chip; then
+    run_password_mode "$1"
+    exit $?
 fi
 
 # No args: lazy-wrap-all + show all codes

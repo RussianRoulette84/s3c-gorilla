@@ -14,6 +14,7 @@ BIN_DIR="/usr/local/bin" # CLIs (needs sudo to write)
 SHARE_DIR="/usr/local/share/s3c-gorilla" # sourced helpers: colorize.sh, godfather.sh
 CONFIG_DIR="$HOME/.config/s3c-gorilla" # user config (keep)
 CONFIG_FILE="$CONFIG_DIR/config"
+CONFIG_EXAMPLE="$SRC_DIR/setup/config.example" # shipped template (lives under src/setup/)
 BUILD_DIR="$(mktemp -d -t s3c-gorilla-build)" # scratch for swiftc output
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
@@ -41,10 +42,10 @@ skip() { printf "%b%s %b[SKIP]%b %s\n" "$C7" "$TREE_MID" "$DIM" "$RESET" "$1" >&
 # so step 8's DB-existence check reflects what the tools will actually use.
 if [[ -f "$CONFIG_FILE" ]]; then
  source "$CONFIG_FILE"
-elif [[ -f "$SCRIPT_DIR/config.example" ]]; then
- source "$SCRIPT_DIR/config.example"
+elif [[ -f "$CONFIG_EXAMPLE" ]]; then
+ source "$CONFIG_EXAMPLE"
 fi
-DB_PATH="${GORILLA_DB:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/KeePassKeePassDB.kdbx}"
+DB_PATH="${GORILLA_DB:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/KeePassDB.kdbx}"
 
 cat << 'EOF' | zsh "$SCRIPT_DIR/src/lib/ywizz/colorize.sh" -s 1 -e 20
     ⢀⣠⣴⠶⠚⠛⢶⣄
@@ -127,8 +128,8 @@ section "[3/11] User config"
 mkdir -p "$CONFIG_DIR"
 if [[ -f "$CONFIG_FILE" ]]; then
  success "Preserved existing: $CONFIG_FILE"
-elif [[ -f "$SCRIPT_DIR/config.example" ]]; then
- cp "$SCRIPT_DIR/config.example" "$CONFIG_FILE"
+elif [[ -f "$CONFIG_EXAMPLE" ]]; then
+ cp "$CONFIG_EXAMPLE" "$CONFIG_FILE"
  success "Created from config.example: $CONFIG_FILE"
  item "Edit that file to change the DB path or group names."
 else
@@ -149,11 +150,17 @@ sudo mkdir -p /usr/local/share/s3c-gorilla
 # sudo cp -R "$SRC_DIR/fs_gorilla" /usr/local/share/s3c-gorilla/fs_gorilla
 # success "fs_gorilla/ package → /usr/local/share/s3c-gorilla/fs_gorilla"
 
-# CLIs → /usr/local/bin (owned by root, world-executable)
-# for tool in env-gorilla otp-gorilla ssh-gorilla.sh llm-gorilla fs-gorilla; do
-#  sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
-#  success "$tool → $BIN_DIR/$tool"
-# done
+# CLIs → /usr/local/bin (owned by root, world-executable). Only ship tools that
+# actually exist in src/ — llm-gorilla/fs-gorilla aren't part of this build, so
+# don't list them (a missing source under `set -e` would abort the installer).
+for tool in env-gorilla otp-gorilla ssh-gorilla.sh; do
+ if [[ -f "$SRC_DIR/$tool" ]]; then
+ sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
+ success "$tool → $BIN_DIR/$tool"
+ else
+ skip "$tool not in src/ — not installed"
+ fi
+done
 
 # Sourced helpers → /usr/local/share/s3c-gorilla (readable libs, not $PATH)
 sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/godfather.sh" "$SHARE_DIR/godfather.sh"
@@ -172,12 +179,28 @@ section "[5/11] Touch ID"
 
 HAS_TOUCHID=false
 
-# AppleBiometricSensor appears in IOKit on any Mac with Touch ID hardware —
-# built-in (MBP/MBA 2016+) or external (Magic Keyboard with Touch ID paired to
-# a desktop). Works on both Apple Silicon and Intel T2.
+# Two-gate detection. AppleBiometricSensor in IOKit is necessary but NOT
+# sufficient: Hackintoshes and VMs can spoof that node yet have no Secure
+# Enclave, so biometric auth can never actually run. The authoritative gate is
+# LocalAuthentication's canEvaluatePolicy — it returns true only when Touch ID
+# is genuinely usable, and it never prompts (just probes). If swiftc is missing,
+# we can't compile the tool anyway, so requiring it here costs nothing.
 TOUCHID_DETECTED=false
 if ioreg -c AppleBiometricSensor 2>/dev/null | grep -q "AppleBiometricSensor"; then
+ PROBE_SRC="$BUILD_DIR/touchid-probe.swift"
+ cat > "$PROBE_SRC" <<'SWIFT'
+import LocalAuthentication
+let ctx = LAContext()
+var err: NSError?
+let ok = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+exit(ok && ctx.biometryType == .touchID ? 0 : 1)
+SWIFT
+ if swiftc "$PROBE_SRC" -o "$BUILD_DIR/touchid-probe" -framework LocalAuthentication 2>/dev/null \
+ && "$BUILD_DIR/touchid-probe" 2>/dev/null; then
  TOUCHID_DETECTED=true
+ else
+ info "AppleBiometricSensor present but Touch ID is not usable (no Secure Enclave?) — password mode"
+ fi
 fi
 
 if $TOUCHID_DETECTED; then
@@ -337,12 +360,15 @@ section "[7/11] Shell integration"
 
 SSH_GORILLA_LINE='source /usr/local/bin/ssh-gorilla.sh'
 SSH_AUTH_SOCK_LINE='export SSH_AUTH_SOCK="$HOME/.s3c-gorilla/agent.sock"'
-if grep -qF "$SSH_GORILLA_LINE" "$HOME/.zprofile" 2>/dev/null && \
- grep -qF "$SSH_AUTH_SOCK_LINE" "$HOME/.zprofile" 2>/dev/null; then
- success "ssh-gorilla + SSH_AUTH_SOCK already in .zprofile"
+# SSH_AUTH_SOCK only matters when the SE-backed agent actually runs — i.e. Touch
+# ID mode. In password mode there's no agent, so exporting a dead socket path
+# just makes `ssh-add`/`ssh` complain. Only require/add it when $HAS_TOUCHID.
+if grep -qF "$SSH_GORILLA_LINE" "$HOME/.zprofile" 2>/dev/null \
+ && { ! $HAS_TOUCHID || grep -qF "$SSH_AUTH_SOCK_LINE" "$HOME/.zprofile" 2>/dev/null; }; then
+ success "Shell integration already in .zprofile"
 else
  printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Add ssh-gorilla wrapper + SSH_AUTH_SOCK export to .zprofile? [Y/n] " -n 1 -r
+ read -p "Add ssh-gorilla wrapper to .zprofile? [Y/n] " -n 1 -r
  echo ""
  if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
  grep -qF "$SSH_GORILLA_LINE" "$HOME/.zprofile" 2>/dev/null || {
@@ -350,10 +376,12 @@ else
  echo "# s3c-gorilla: root@ prepend for bare hostnames" >> "$HOME/.zprofile"
  echo "$SSH_GORILLA_LINE" >> "$HOME/.zprofile"
  }
+ if $HAS_TOUCHID; then
  grep -qF "$SSH_AUTH_SOCK_LINE" "$HOME/.zprofile" 2>/dev/null || {
  echo "# s3c-gorilla: point ssh at our agent (s3c-ssh-agent LaunchAgent)" >> "$HOME/.zprofile"
  echo "$SSH_AUTH_SOCK_LINE" >> "$HOME/.zprofile"
  }
+ fi
  success "Added (restart terminal or: source ~/.zprofile)"
  else
  skip "(not added)"
@@ -389,7 +417,16 @@ fi
 # ----------------------------------------------------------
 section "[10/11] fs-gorilla LaunchDaemon"
 
-if [[ ! -x /usr/bin/eslogger ]]; then
+FS_GORILLA_BIN="$BIN_DIR/fs-gorilla"
+if [[ ! -x "$FS_GORILLA_BIN" ]]; then
+ # The daemon plist's ExecStart is $FS_GORILLA_BIN; loading it (and pointing
+ # the FDA grant at it) only makes sense once that binary is actually
+ # installed. It isn't part of this build, so skip the whole step rather than
+ # bootstrap a daemon that can't spawn and tell the user to drag a missing
+ # file into Full Disk Access.
+ warn "fs-gorilla not installed at $FS_GORILLA_BIN — skipping its LaunchDaemon"
+ skip "fs-gorilla isn't part of this build; nothing to load."
+elif [[ ! -x /usr/bin/eslogger ]]; then
  warn "/usr/bin/eslogger missing — requires macOS 13+ (Ventura)"
  skip "Skipping LaunchDaemon load — fs-gorilla CLI still works for ad-hoc runs"
 else
@@ -685,7 +722,14 @@ EOF
  return 0
 }
 
-if install_ssh_step; then
+# Both SSH modes (chip-wrap, se-born) sign through touchid-gorilla + the Secure
+# Enclave — there is no password-only path in s3c-ssh-agent. Without Touch ID
+# the agent can't function, so skip the whole step rather than offer modes that
+# can't work on this machine.
+if ! $HAS_TOUCHID; then
+ skip "SSH agent needs Touch ID / Secure Enclave — not available in password mode."
+ item "Your existing ~/.ssh keys keep working as-is; env-gorilla/otp-gorilla are unaffected."
+elif install_ssh_step; then
  success "SSH setup complete (mode: $(grep '^GORILLA_SSH_MODE=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"'))"
 else
  warn "SSH setup bailed — env/otp/fs/llm tools still work. Re-run ./install.sh to retry."
@@ -714,7 +758,11 @@ p_row "    ssh myserver.com           auto-unlock + connect"
 p_row ""
 p_row "  env-gorilla"
 p_row "    env-gorilla app -- cmd     run with secrets"
-p_row "    env-gorilla --setup        setup Touch ID"
+if $HAS_TOUCHID; then
+ p_row "    env-gorilla --setup        setup Touch ID"
+else
+ p_row "    env-gorilla --setup        configure password mode"
+fi
 p_row "    env-gorilla --list         list projects"
 p_row ""
 p_row "  otp-gorilla"
