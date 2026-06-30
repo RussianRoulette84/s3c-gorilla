@@ -30,8 +30,14 @@ struct Reader {
     }
     mutating func readUInt32() -> UInt32? {
         guard pos + 4 <= data.count else { return nil }
-        let v = data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self) }
-        pos += 4; return UInt32(bigEndian: v)
+        // Assemble big-endian byte-by-byte: `load(as:)` needs 4-byte alignment,
+        // which a Data slice at an arbitrary offset doesn't guarantee — unaligned
+        // loads are tolerated on x86 but trap on arm64.
+        let v = (UInt32(data[pos])     << 24) |
+                (UInt32(data[pos + 1]) << 16) |
+                (UInt32(data[pos + 2]) << 8)  |
+                 UInt32(data[pos + 3])
+        pos += 4; return v
     }
     mutating func readString() -> Data? {
         guard let len = readUInt32(), pos + Int(len) <= data.count else { return nil }

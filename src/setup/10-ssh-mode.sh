@@ -121,8 +121,14 @@ EOF
  if [[ -n "$test_host" ]]; then
  local host_arg="$test_host"
  [[ "$test_host" != *@* ]] && host_arg="root@$test_host"
- if SSH_AUTH_SOCK="$AGENT_DIR/agent.sock" \
- ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit 2>&1 | tail -5; then
+ # Capture ssh's OWN exit status — piping into `tail` would make the `if`
+ # test tail's status (always 0) and falsely report success on auth failure.
+ local ssh_out ssh_rc
+ ssh_out="$(SSH_AUTH_SOCK="$AGENT_DIR/agent.sock" \
+ ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit 2>&1)"
+ ssh_rc=$?
+ printf '%s\n' "$ssh_out" | tail -5
+ if [[ $ssh_rc -eq 0 ]]; then
  success "Connected to $test_host — end-to-end works"
  else
  warn "SSH to $test_host failed — check /tmp/s3c-ssh-agent.err.log"
