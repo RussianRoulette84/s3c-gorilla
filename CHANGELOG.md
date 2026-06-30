@@ -1,6 +1,40 @@
 # Changelog
 
-## [0.13] - 2026-06-28
+## [0.15] - 2026-06-30
+
+### Security
+- The master password is scrambled in memory and locked there, so it's never written to disk or caught in a crash dump. We're upfront that this is hardening, not magic: a debugger running as you can still read it.
+- Only our own tools can talk to the background agent — a random program running under your account can't.
+- Anything left over in `/tmp` from before a reboot is ignored (for both the env/otp and SSH paths), so a reboot really does start you clean.
+- Fixed a bug where several commands running at once could corrupt the agent's memory.
+
+### Added
+- **Type the master password once per terminal tab.** A small memory-only helper (`s3c-session-agent`) holds it — scrambled and locked in RAM, never on disk — so `env-gorilla`, `otp-gorilla`, and `ssh` stop asking again in that tab. It's wiped when you close the tab, log out, lock the screen, go idle, or reboot. Turn it on with `GORILLA_SESSION_UNLOCK`.
+- **One master password per session on Touch ID Macs.** The first tool you run unlocks the whole vault in a single prompt and locks each secret behind the chip, so the rest of the session is just a fingerprint. It runs in the background so your first command doesn't hang, and a wrong password no longer leaves the session half-broken.
+- **Faster unlock.** That first unlock now reads the whole database in one shot — one password check — instead of re-opening it once per secret, which is seconds faster on a big vault. Falls back to the slower way if anything goes wrong.
+- **RSA SSH keys work everywhere now.** Both password-mode SSH and the KeePassXC app push can sign with RSA keys, not just Ed25519/ECDSA. The installer spots an RSA key and lets you keep it or swap in a fresh, smaller Ed25519 — and tells you which servers to update if you do.
+- **`s3c-gorilla` — one command for everything:** `status`, `doctor` (health check), `wipe` (end every session before you hand off the laptop), `lock` (end just this tab), `list`, `setup`, `uninstall`, plus the two below.
+- **`s3c-gorilla scan`** — find your exposed secrets: plaintext `.env` files (including `.env.local`/`.env.prod`), unencrypted `~/.ssh` keys, and secrets sitting in your git or shell history. The output is redacted — it tells you *where* and *what kind*, never the secret itself. Skips `node_modules` and examples.
+- **`s3c-gorilla keychain`** — find the Apple Keychain logins that belong in your vault (git, SSH, cloud) and move them across (`check` / `import` / `fix`). It only deletes the Keychain copy after confirming the entry is safely in your vault.
+- **KeePassXC app push** — unlock the KeePassXC app and it hands your SSH keys to our agent; `ssh` then works in the terminal *and* in GUI apps (SourceTree, VS Code) with no Touch ID until you lock the database again.
+- **`--paranoid`** for `env-gorilla`/`otp-gorilla` — grab the one secret you need, use it, and cache nothing.
+- **Secure typing** on the master-password prompt — stops other apps from reading your keystrokes (Touch ID mode).
+- **2FA codes work offline** after the first use (no repeat trips to KeePassXC), and each one is double-checked against KeePassXC so a wrong code can never be shown.
+
+### Changed
+- **The installer is now a set of small, readable steps** run by a tiny launcher; if a step fails it names exactly which one instead of dying silently.
+- **Password-mode SSH** is served by the per-tab helper now (no always-on background service), so a single prompt per tab covers env, otp, and ssh together.
+- A brand-new shell stays fast — the `ssh` helper only loads its extras the first time you actually run `ssh`.
+- The installer now checks that the SSH key in your vault is real and usable and prints its fingerprint, so a dead or missing key is caught during setup instead of failing later with "Permission denied".
+
+### Tests
+- macOS + Linux CI; shell test suites for the CLI, scan, keychain, and the one-prompt unlock; a full end-to-end agent round-trip; and pinned 2FA / socket-name test vectors.
+
+### Fixed
+- `ssh` could fail right after unlocking because the agent's socket wasn't ready yet — the agent now has its socket live *before* it reports itself unlocked.
+- Two rounds of self-review (40 items) — among them: a wrong password no longer marks a session "done", Keychain cleanup can't delete a login that isn't safely in the vault yet, and importing creates its vault folder first.
+
+## [0.14] - 2026-06-28
 
 ### Added
 - **Dual-mode (Touch ID *and* password) end to end.** Tools auto-detect via the presence of the `touchid-gorilla` binary (`have_chip`). On no-Secure-Enclave machines (e.g. Intel/Hackintosh) `env-gorilla` injects `.env`s straight from the kdbx each run (no chip-wrap), and `otp-gorilla` computes codes via `keepassxc-cli show -t`.
@@ -11,6 +45,10 @@
 - **Installer trimmed to 10 steps** — removed the `fs-gorilla` LaunchDaemon step and its orphaned plist; step 4 now installs only the CLIs that exist (`env-gorilla`, `otp-gorilla`, `ssh-gorilla.sh`).
 - **End-of-install cheatsheet** rebuilt: left-bar layout (no misaligning right wall), orange tool names, every real command with a realistic example.
 - `config.example` ships `GORILLA_SSH_MODE` commented out (set by the installer only in Touch ID mode); fixed the example path (`src/setup/`) and default DB name (`KeePassDB.kdbx`).
+
+### Docs
+- **PLAN.md reconciled with v0.14 reality** — retitled to dual-mode (chip + password), added a §0 reconciliation (build-status table, what changed, dual-mode model, a B1–B17 / I-a–I-f follow-up backlog), a §8 password-mode + session-unlock architecture section, hardening H5 (AES-GCM session-agent pw) + H6 (zeroable ssh-agent buffer), the `GORILLA_SESSION_UNLOCK` config knob, and password-mode validation rows. Stale fs-gorilla / `gorilla_tunnel` references swept.
+- **PLAN.md restructured** — added a top **Progress tracker** (overall % + P0–P7 phase table with ✅/🟡/⬜ checkmarks); reorganized the implementation checklist **by phase** with a BUILT/PARTIAL/PLANNED status on every row; realigned the "Implementation phases" ordering to P0–P7; **removed the develop-branch / branch-per-phase requirement** (work on the current branch).
 
 ### Fixed
 - README install one-liner pointed at `master/src/install.sh` (404) — corrected to `master/install.sh`.

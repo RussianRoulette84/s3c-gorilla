@@ -1,0 +1,212 @@
+#!/bin/bash
+##########################################################################################
+## s3c-gorilla — umbrella CLI for the suite.
+##   status (default) · doctor · wipe · lock · list ssh|env|otp · setup · uninstall
+## Dual-mode (chip / password). No secrets are ever printed.
+##   scan / keychain are planned — not yet implemented.
+##########################################################################################
+
+GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
+[[ -f "$GORILLA_CONFIG" ]] && source "$GORILLA_CONFIG"
+: "${GORILLA_DB:=$HOME/Library/Mobile Documents/com~apple~CloudDocs/KeePassDB.kdbx}"
+: "${GORILLA_ENV_GROUP:=ENV}"
+: "${GORILLA_OTP_GROUP:=2FA}"
+: "${GORILLA_TOUCHID:=/usr/local/bin/touchid-gorilla}"
+: "${GORILLA_SESSION_AGENT:=/usr/local/bin/s3c-session-agent}"
+: "${GORILLA_SESSION_UNLOCK:=false}"
+: "${GORILLA_UNLOCK_TTL:=7200}"
+
+SHARE_DIR="/usr/local/share/s3c-gorilla"
+SESSION_DIR="$HOME/.s3c-gorilla/session"
+BLOB_DIR="/tmp/s3c-gorilla"
+LOG_DIR="$HOME/Library/Logs/s3c-gorilla"
+BIN_DIR="/usr/local/bin"
+
+C7=$'\033[38;5;177m'; GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; RESET=$'\033[0m'
+hdr()    { printf "\n${C7}◆ %s${RESET}\n" "$1"; }
+ok()     { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
+warnln() { printf "  ${YELLOW}!${RESET} %s\n" "$1"; }
+failln() { printf "  ${RED}✗${RESET} %s\n" "$1"; }
+note()   { printf "  ${DIM}· %s${RESET}\n" "$1"; }
+
+have_chip() { [[ -x "$GORILLA_TOUCHID" ]]; }
+_drop()     { trash "$1" 2>/dev/null || unlink "$1" 2>/dev/null || true; }   # never plain rm
+# Match ONLY the long-lived daemons (argv is "<binpath> __serve <tty> <ppid>"), so we never
+# kill an unrelated process that merely has "s3c-session-agent" somewhere in its argv.
+AGENT_MATCH="$GORILLA_SESSION_AGENT __serve"
+
+_count_sessions() {   # echo "<sockets> <procs>"
+    local socks=0 f
+    shopt -s nullglob
+    for f in "$SESSION_DIR"/*.sock; do [[ "$f" == *.ssh.sock ]] || socks=$((socks+1)); done
+    local procs; procs=$(pgrep -f "$AGENT_MATCH" 2>/dev/null | wc -l | tr -d ' ')
+    printf '%s %s' "$socks" "$procs"
+}
+
+cmd_status() {
+    local rc=0
+    hdr "s3c-gorilla status"
+    if have_chip; then note "mode: chip (Touch ID / Secure Enclave)"
+    else note "mode: password (no Secure Enclave)"; fi
+    note "session-unlock: $GORILLA_SESSION_UNLOCK   (TTL ${GORILLA_UNLOCK_TTL}s, resets on activity)"
+    read -r nsock nproc < <(_count_sessions)
+    note "active terminal sessions: $nsock socket(s), $nproc agent process(es)"
+    if [[ -x "$GORILLA_SESSION_AGENT" ]]; then   # real seconds-left for THIS tab (HR #9)
+        local pong; pong=$("$GORILLA_SESSION_AGENT" ping "$(tty 2>/dev/null || echo no-tty)" 2>/dev/null)
+        [[ "$pong" == OK\ * ]] && note "this terminal: ${pong#OK } s remaining (of ${GORILLA_UNLOCK_TTL}s)"
+    fi
+    if have_chip; then
+        local nblob; nblob=$(ls "$BLOB_DIR"/*.blob 2>/dev/null | wc -l | tr -d ' ')
+        note "chip blobs in $BLOB_DIR: $nblob"
+    fi
+    hdr "binaries"
+    _check_bin env-gorilla "$BIN_DIR/env-gorilla" || rc=1
+    _check_bin otp-gorilla "$BIN_DIR/otp-gorilla" || rc=1
+    _check_bin ssh-gorilla.sh "$BIN_DIR/ssh-gorilla.sh" || rc=1
+    _check_bin s3c-session-agent "$GORILLA_SESSION_AGENT" || rc=1
+    _check_bin touchid-gorilla "$GORILLA_TOUCHID" || rc=1
+    _check_bin s3c-ssh-agent "$BIN_DIR/s3c-ssh-agent" || rc=1
+    hdr "vault"
+    if [[ -f "$GORILLA_DB" ]]; then ok "kdbx: $(basename "$GORILLA_DB")"; else failln "kdbx not found: $GORILLA_DB"; rc=1; fi
+    note "config: $GORILLA_CONFIG"
+    return $rc
+}
+
+# _check_bin <name> <path> — chip-only binaries missing in password mode are a note, not a fail.
+_check_bin() {
+    if [[ -x "$2" ]]; then ok "$1 → $2"; return 0; fi
+    if [[ "$1" == "touchid-gorilla" || "$1" == "s3c-ssh-agent" ]] && ! have_chip; then
+        note "$1 (chip mode only — not installed)"; return 0
+    fi
+    failln "$1 missing: $2"; return 1
+}
+
+cmd_doctor() {
+    local rc=0
+    cmd_status || rc=1
+    hdr "doctor — dependencies + integrity"
+    if command -v keepassxc-cli >/dev/null 2>&1; then ok "keepassxc-cli: $(keepassxc-cli --version 2>/dev/null)"; else failln "keepassxc-cli not found"; rc=1; fi
+    command -v terminal-notifier >/dev/null 2>&1 && ok "terminal-notifier present" || note "terminal-notifier not installed (otp notifications disabled)"
+    if [[ -f "$GORILLA_CONFIG" ]] && bash -n "$GORILLA_CONFIG" 2>/dev/null; then ok "config sourceable"; else warnln "config missing or unsourceable"; fi
+    # codesign verify swift binaries that exist
+    local b
+    for b in "$GORILLA_SESSION_AGENT" "$BIN_DIR/s3c-ssh-agent" "$GORILLA_TOUCHID"; do
+        [[ -x "$b" ]] || continue
+        if codesign --verify "$b" 2>/dev/null; then ok "codesign ok: $(basename "$b")"; else warnln "codesign unverified: $(basename "$b") (ad-hoc?)"; fi
+    done
+    # recent agent log errors
+    if [[ -d "$LOG_DIR" ]]; then
+        local errs; errs=$(tail -n 50 "$LOG_DIR"/*.log 2>/dev/null | grep -ic 'fail\|error' || true)
+        [[ "$errs" -gt 0 ]] && warnln "$errs recent agent log warnings — see $LOG_DIR" || ok "no recent agent log errors"
+    else note "no agent logs yet ($LOG_DIR)"; fi
+    hdr "result"
+    [[ $rc -eq 0 ]] && ok "no failures" || failln "one or more checks failed"
+    return $rc
+}
+
+cmd_wipe() {
+    read -r _ nproc < <(_count_sessions)
+    pkill -TERM -f "$AGENT_MATCH" 2>/dev/null || true   # SIGTERM → each agent zeros its pw + sockets
+    if [[ -d "$SESSION_DIR" ]]; then shopt -s nullglob; local f; for f in "$SESSION_DIR"/*; do _drop "$f"; done; fi
+    if have_chip; then
+        "$GORILLA_TOUCHID" wrap-clear 2>/dev/null || true
+        launchctl kickstart -k "gui/$UID/com.slav-it.s3c-ssh-agent" 2>/dev/null || true
+    fi
+    echo "wiped: $nproc session agent(s) terminated; sessions cleared$( have_chip && echo '; chip blobs zeroed; ssh-agent restarted' )."
+}
+
+cmd_lock() {
+    local tty; tty=$(tty 2>/dev/null || echo no-tty)
+    [[ -x "$GORILLA_SESSION_AGENT" ]] && "$GORILLA_SESSION_AGENT" stop "$tty" 2>/dev/null
+    echo "locked this terminal's session — next tool call will re-prompt."
+}
+
+cmd_list() {
+    local kind="${1:-}"
+    case "$kind" in ssh|env|otp) ;; *) echo "usage: s3c-gorilla list ssh|env|otp" >&2; return 2 ;; esac
+    if have_chip; then
+        shopt -s nullglob; local f found=false
+        for f in "$BLOB_DIR/$kind"-*.blob; do found=true; f=$(basename "$f" .blob); echo "${f#$kind-}"; done
+        $found || echo "(no cached $kind blobs — run a tool to populate)"
+    else
+        local group tty
+        case "$kind" in env) group="$GORILLA_ENV_GROUP" ;; otp) group="$GORILLA_OTP_GROUP" ;; ssh) group="SSH" ;; esac
+        tty=$(tty 2>/dev/null || echo no-tty)
+        if [[ -x "$GORILLA_SESSION_AGENT" ]]; then
+            "$GORILLA_SESSION_AGENT" list "$tty" "$group" 2>/dev/null | grep -v '/$' || echo "(no active session — run a tool first)"
+        else echo "(session agent not installed)"; fi
+    fi
+}
+
+cmd_setup() {
+    local src; src=$(cat "$SHARE_DIR/install-source" 2>/dev/null)
+    [[ -n "$src" && -f "$src/install.sh" ]] || { echo "install source not recorded or missing — re-clone the repo and run ./install.sh" >&2; return 1; }
+    exec bash "$src/install.sh"
+}
+
+cmd_uninstall() {
+    hdr "s3c-gorilla uninstall"
+    echo "Removes the s3c-gorilla binaries, agents, and ~/.s3c-gorilla. Your kdbx is NOT touched."
+    read -p "Continue? [y/N] " -n 1 -r; echo
+    [[ $REPLY =~ ^[Yy]$ ]] || { echo "aborted."; return 0; }
+    pkill -TERM -f "$AGENT_MATCH" 2>/dev/null || true
+    launchctl bootout "gui/$UID/com.slav-it.s3c-ssh-agent" 2>/dev/null || true
+    local b
+    for b in env-gorilla otp-gorilla ssh-gorilla.sh touchid-gorilla s3c-ssh-agent s3c-session-agent s3c-gorilla; do
+        sudo rm -f "$BIN_DIR/$b" 2>/dev/null || true
+    done
+    sudo rm -rf "$SHARE_DIR" 2>/dev/null || true
+    rm -rf "$HOME/.s3c-gorilla" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/com.slav-it.s3c-ssh-agent.plist" 2>/dev/null || true
+    ok "binaries + agents + ~/.s3c-gorilla removed"
+    read -p "Also remove ~/.config/s3c-gorilla + the .zprofile lines? [y/N] " -n 1 -r; echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "$HOME/.config/s3c-gorilla" 2>/dev/null || true
+        [[ -f "$HOME/.zprofile" ]] && sed -i.s3cbak '/s3c-gorilla/d; /ssh-gorilla\.sh/d' "$HOME/.zprofile" 2>/dev/null || true
+        ok "config + .zprofile cleaned (backup: ~/.zprofile.s3cbak)"
+    fi
+    echo "done. Your KeePassXC database was left intact."
+}
+
+usage() {
+    cat <<EOF
+s3c-gorilla — suite control
+
+  s3c-gorilla [status]      show mode, sessions, binaries, vault
+  s3c-gorilla doctor        full health check (deps, codesign, logs)
+  s3c-gorilla wipe          drop ALL sessions now (hand-off / panic)
+  s3c-gorilla lock          drop THIS terminal's session
+  s3c-gorilla list ssh|env|otp   names cached/available (no secrets)
+  s3c-gorilla scan [--env|--ssh|--git|--shell-history|--all]
+                            audit exposure: plaintext .env, ~/.ssh keys,
+                            git history, shell history (output REDACTED)
+  s3c-gorilla keychain [check|fix|import <svc>]
+                            migrate Apple Keychain creds into the vault (macOS)
+  s3c-gorilla setup         re-run the installer
+  s3c-gorilla uninstall     remove the suite (kdbx untouched)
+EOF
+}
+
+case "${1:-status}" in
+    status|"") cmd_status ;;
+    doctor)    cmd_doctor ;;
+    wipe)      cmd_wipe ;;
+    lock)      cmd_lock ;;
+    list)      shift; cmd_list "$@" ;;
+    scan)
+        shift
+        _scanlib="$SHARE_DIR/s3c-scan.sh"
+        [[ -r "$_scanlib" ]] || _scanlib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/s3c-scan.sh"
+        if [[ -r "$_scanlib" ]]; then source "$_scanlib"; cmd_scan "$@"; else echo "s3c-gorilla: scanner not installed ($_scanlib)" >&2; exit 1; fi
+        ;;
+    keychain)
+        shift
+        _kclib="$SHARE_DIR/s3c-keychain.sh"
+        [[ -r "$_kclib" ]] || _kclib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/s3c-keychain.sh"
+        if [[ -r "$_kclib" ]]; then source "$_kclib"; cmd_keychain "$@"; else echo "s3c-gorilla: keychain helper not installed ($_kclib)" >&2; exit 1; fi
+        ;;
+    setup)     cmd_setup ;;
+    uninstall) cmd_uninstall ;;
+    -h|--help|help) usage ;;
+    *) echo "s3c-gorilla: unknown command '$1'" >&2; usage; exit 2 ;;
+esac

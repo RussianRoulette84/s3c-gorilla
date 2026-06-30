@@ -1,78 +1,199 @@
-# s3c-gorilla: eager-unified unlock (1 prompt per session, fan-out extraction, per-secret chip-wrap, per-secret Touch ID coercion scope)
+# s3c-gorilla: dual-mode unlock — chip mode (Touch ID/Secure Enclave: 1 prompt/session, fan-out, per-secret chip-wrap, per-secret coercion scope) + password mode (no SE: per-tty session-unlock)
 
 > **File location:** this file lives at `./plan/PLAN.md`. Updated live as work progresses.
 
 > **Before you start coding:** read
-> [plan/BUILD_STRATEGY.md](BUILD_STRATEGY.md) for the 7-point
-> rule set (branch-per-phase, red-first, parallel subagents,
-> dogfood early, keep this file alive). Execution happens inside
-> `cld --tmux-team` — see §Build strategy + execution model.
+> [plan/BUILD_STRATEGY.md](BUILD_STRATEGY.md) for the rule set
+> (red-first, parallel subagents, dogfood early, keep this file
+> alive). **No branch-per-phase / develop-branch requirement —
+> work on the current branch.** Execution happens inside
+> `cld --tmux-team`.
 
-## 1. Implementation checklist (Claude updates)
+## 0. v0.14 reconciliation — dual-mode reality (READ FIRST)
 
-| Done | Success | Name | Description |
-|:---:|:---:|---|---|
-| [ ] | 0% | Refactor install.sh | Rename old monolith to .bak, new lean orchestrator lives at `src/install.sh` (NOT repo root) + modular `src/setup/*.sh` (≤200 line main); self-bootstrap for curl-bash one-liner (Step 0.e) |
-| [ ] | 0% | install.sh: 09-database.sh iCloud scan + size warning | find + picker; `stat -f %z` probe → warn if kdbx > 24 MiB (default 32 MiB budget covers ~24 MiB kdbx — Phase 0 finding) |
-| [ ] | 0% | install.sh: 11-pw-prompt.sh | dialog/terminal prompt |
-| [ ] | 0% | install.sh: 12-screen-lock.sh | Paranoid Screen Lock toggle → `GORILLA_WIPE_ON_SCREEN_LOCK` |
-| [ ] | 0% | install.sh: 13-ssh-mode.sh | chip-wrap/se-born + key import + rotate/upgrade |
-| [ ] | 0% | install.sh: 14-launchagent.sh | `sudo install -m 0555 -o root -g wheel` agent binary; plist embeds `SoftResourceLimits`/`HardResourceLimits` MemoryLock = 48 MiB (Concern #23 / N2); record cdhash to `/usr/local/share/s3c-gorilla/agent.cdhash` (Concern #43); bootout+bootstrap |
-| [ ] | 0% | install.sh: 15-permissions.sh | guide Notifications + Full Disk Access (Accessibility/Automation no longer needed after Phase 3 drop) |
-| [ ] | 0% | install.sh: 16-s3c-gorilla.sh | install `/usr/local/bin/s3c-gorilla` (mode 0555), record install-source path, auto-run `keychain check` at end |
-| [ ] | 0% | s3c-gorilla CLI — dispatcher + `status` (default) | Agent state, TTL remaining, cdhash-vs-pin check, config/tool paths, KDBX status — all in one command |
-| [ ] | 0% | s3c-gorilla CLI — `setup` | Re-invokes install.sh from recorded install-source; clear error if repo missing |
-| [ ] | 0% | s3c-gorilla CLI — `keychain check` | Enumerate Keychain items matching git/ssh/cloud patterns; table output; exit 1 on hits |
-| [ ] | 0% | s3c-gorilla CLI — `keychain fix` | Interactive per-item: verify in kdbx → offer delete from Keychain; reuses fan-out session |
-| [ ] | 0% | s3c-gorilla CLI — `scan --env` (default) | Filesystem scan for plaintext `.env` under project roots; flag git-committed or un-.gitignored hits |
-| [ ] | 0% | s3c-gorilla CLI — `doctor` | Aggregated health: codesign verify, runtime+timestamp flags, dir/file modes, deps, Touch ID hw, kdbx reachable, agent cache health, memlock budget |
-| [ ] | 0% | s3c-gorilla CLI — `wipe` | Take bootstrap flock → `touchid-gorilla wrap-clear` → `launchctl kickstart -k` → report count wiped |
-| [ ] | 0% | s3c-gorilla CLI — `ssh list` / `env list` / `otp list` | Filename-strip enumeration from `/tmp/s3c-gorilla/<prefix>-*.s3c`; no Touch ID; fall-back hint when no session |
-| [ ] | 0% | s3c-gorilla CLI — `scan --ssh` | Audit `~/.ssh/` modes + detect plaintext private keys (OpenSSH v1 + PEM header patterns) + hashed known_hosts check |
-| [ ] | 0% | s3c-gorilla CLI — `scan --git` | Search git history in scan-roots for secret-shaped strings (AWS/GitHub/Slack/JWT/PEM); REDACTED output only |
-| [ ] | 0% | s3c-gorilla CLI — `scan --shell-history` | Grep zsh/bash/fish history for long assignments + secret-shape patterns; REDACTED output only |
-| [ ] | 0% | s3c-gorilla CLI — `scan --all` | Runs --env + --ssh + --git + --shell-history; aggregate exit code |
-| [ ] | 0% | s3c-gorilla CLI — `keychain import` | Per-hit interactive: extract from Keychain → pipe into `keepassxc-cli add` (reuses fan-out session); leaves Keychain entry in place |
-| [ ] | 0% | Step 0 gate: verify refactor | Run new `src/install.sh` end-to-end on dev Mac, match .bak behaviour |
-| [x] | 100% | Phase 0 — keepassxc-cli XML export verification (GATE) | Concern #24: probed stdout/-o, tempfile, attachment encoding, large-attachment behaviour, wrong-credential behaviour on real vault. **Verdict: GREEN** (2026-04-24, keepassxc-cli 2.7.12). Findings folded directly into this plan — budget bumped 10 → 32 MiB, Step 9 size warning added, Compressed="True" confirmed (needs Foundation.Compression), wrong-cred returns exit 1 with zero stdout. Probe 4 (dtruss tempfile trace) deferred to Phase 1 integration. |
-| [ ] | 0% | H1 — zero secret buffers in Swift | Inline mmap+mlock+zero on the bulk XML buffer only; per-entry secrets use plain `Data` + `wipe()` helper called via `defer` (Concern #27 90/5 rule) |
-| [ ] | 0% | H2 — CommonCrypto primary, BigInt fallback | CCRSACryptorCreateFromData(n,e,p,q) as primary; keep modPow + CRT math as runtime-selected dormant fallback (Concern #22) |
-| [ ] | 0% | H3 — hardened runtime + timestamp | Add `--options runtime --timestamp` to all codesign calls |
-| [ ] | 0% | H4 — secure input master-pw prompt | `touchid-gorilla master-prompt` with EnableSecureEventInput() |
-| [ ] | 0% | Concern #18 — signal handlers around SecureEventInput | Install SIGINT/TERM/SEGV/ABRT/etc, all call DisableSecureEventInput |
-| [ ] | 0% | Concern #19 — flock timeout | `-w 30` on bash, fcntl poll loop in Swift; clear error on deadlock |
-| [ ] | 0% | Concern #20 — pushed-keys heartbeat + max-age | 10s pgrep timer + 5min per-key age cap (tightened) |
-| [ ] | 0% | Concern #23 — RLIMIT_CORE + mlock bulk XML buffer + early-zero | setrlimit to suppress core dumps, mlock the 32 MiB XML buffer only, zero + munlock + munmap before per-entry wrap loop; add honest threat-model paragraph |
-| [ ] | 0% | Concern #25 — only fan-out mutates /tmp/s3c-gorilla/ | tools never wipe/recover; tool-side "sentinel absent" path invokes `touchid-gorilla fan-out`; wipe subcommands take bootstrap flock |
-| [ ] | 0% | Concern #26 — unconditional RunAtLoad wipe + tool-side inline mtime-vs-boottime | agent `rm -rf` on login under flock; tools `fstat`+compare to kern.boottime before trusting any blob |
-| [ ] | 0% | Concern #27 — 90/5 `Data` + `wipe()` helper | No SecretBuf type; mlock only the XML buffer (see #23); per-entry secrets are plain `Data` + `defer { wipe(&d) }`; no lint, no annotations |
-| [ ] | 0% | Concern #28 — idempotent lockfile+dir creation | Agent re-creates dir+lockfile on every wipe; CLI tools ensure path before flock |
-| [ ] | 0% | Concern #29 — unwrap retry-via-fanout on race | Classify ENOENT/SecInvalidKey as wipe-under-us; one silent retry before scary error |
-| [ ] | 0% | Concern #30 — iCloud evicted kdbx probe | Step 9 xattr+head probe; runtime fan-out surfaces "open KeePassXC in Finder" dialog |
-| [ ] | 0% | Concern #31 — full otpauth URI parse | Store full URI in blob; parse digits/period/algorithm/issuer at unwrap time |
-| [ ] | 0% | Concern #33 — RSA byte-identical-to-ssh-keygen harness | All three algorithms (ssh-rsa / rsa-sha2-256 / rsa-sha2-512) byte-match before H2 ships |
-| [ ] | 0% | Concern #34 — step-file failure-propagation convention | Every step file ends with `true`; orchestrator wraps `source` with explicit error |
-| [ ] | 0% | Concern #35 — numeric glob sort + two-digit pad lint | `sort -V` in orchestrator; lint rejects mis-padded filenames |
-| [ ] | 0% | Concern #36 — terminal-notifier version pin + alerter fallback | Version-check at install; auto-swap to alerter if self-test fails |
-| [ ] | 0% | Concern #37 — NUL-delimited paths + printf %q config write | `find -print0` / `read -d ''`; %q on GORILLA_DB write |
-| [ ] | 0% | Concern #39 — one-line agent-health warning per tool call | `launchctl list com.slav-it.s3c-ssh-agent` (stable format, parse PID); stderr warning only, no tool failure |
-| [ ] | 0% | Concern #40 — peer-credential whitelist on ADD_IDENTITY | `LOCAL_PEERPID` → `proc_pidpath` → bundle ID; reject non-whitelisted; log PID+path |
-| [ ] | 0% | Concern #41 — fan-out progress sentinel | `.fan-out-in-progress` file + waiter-side live progress line instead of silent 120s hang |
-| [ ] | 0% | Phase 1 — `touchid-gorilla fan-out` subcommand | Shared bootstrap: flock → master-prompt → extract every SSH/ENV/2FA secret → chip-wrap each → save pubkeys (plain) + keys.json.s3c (chip-wrapped, Concern #42) |
-| [ ] | 0% | Concern #42 — chip-wrap keys.json registry | `keys.json.s3c` via SE; agent caches decoded registry in a `Data` + `wipe()`-on-exit; zero on SIGTERM / screen-lock / REMOVE_ALL |
-| [ ] | 0% | Concern #43 — binary integrity triple-layer | `sudo install -m 0555 -o root -g wheel` for both binaries; agent + touchid-gorilla call `SecCodeCheckValidity` on startup; install.sh pins cdhash to `/usr/local/share/s3c-gorilla/{agent,touchid-gorilla}.cdhash`, binaries compare at launch |
-| [ ] | 0% | Phase 1 — XML bulk export fan-out (§2a) | keepassxc-cli export -f xml + Swift XMLParser two-pass |
-| [ ] | 0% | Phase 1 — master-pw probe + integrity checks (§2b) | ls -q pre-loop, XML sanity, per-entry format sniff |
-| [ ] | 0% | Phase 1 — session-valid sentinel + rollback (§2c) | .session-valid file + trap + crash-safe tool-side check |
-| [ ] | 0% | Phase 1 — per-tool blobs (no master.s3c) | ssh-*, env-*, otp-* blobs in /tmp/s3c-gorilla/, each chip-wrap encrypted |
-| [ ] | 0% | Phase 1 — per-blob TTL (7200s) + activity reset | Each blob's mtime touched on unwrap |
-| [ ] | 0% | Phase 1 — flock concurrent-create lock | Prevents duplicate master-pw prompts |
-| [ ] | 0% | Phase 1 — `--paranoid` flag (env/otp) | Skips chip-wrap cache, extracts one secret, wipes |
-| [ ] | 0% | Phase 1 — pw prompt dialog/terminal | `GORILLA_MASTER_PW_PROMPT` + `--pw-dialog` / `--pw-terminal` flags |
-| [ ] | 0% | Phase 1 — logout SIGTERM wipe | Agent SIGTERM handler runs wrap-clear |
-| [ ] | 0% | Phase 1 — screen-lock wipe (`GORILLA_WIPE_ON_SCREEN_LOCK` honored) | Agent subscribes to com.apple.screenIsLocked; wipes only when config=1 |
-| [ ] | 0% | Phase 2 — ADD_IDENTITY handler | Agent accepts KeePassXC SSH-Agent push |
-| [ ] | 0% | Phase 2 — REMOVE_IDENTITY + REMOVE_ALL | Cache eviction on KeePassXC lock |
+This plan was written ~2 months before v0.14; the codebase has since diverged. This
+section reconciles the two. **The rest of the plan (the chip-mode "eager-unified
+fan-out" design) remains the unbuilt target — it is the roadmap, not current state.**
+
+### What changed since this plan
+- **fs-gorilla removed** entirely (binary, LaunchDaemon, installer step, docs). Any
+  remaining mention is historical.
+- **A second mode shipped: password mode** (no Secure Enclave — Intel/Hackintosh).
+  The design below assumes Touch ID + SE everywhere; that is now ONLY the chip-mode
+  track.
+- **Session-unlock** (new): an optional per-tty `s3c-session-agent` holds the master
+  password obfuscated + mlock'd, memory-only, so env/otp/ssh stop re-prompting within
+  a terminal tab. Wiped on TTL / logout / screen-lock / reboot / parent-shell death.
+- **s3c-ssh-agent gained a `password` key mode** — extracts the SSH key from the kdbx
+  with the master pw (no SE) and caches it in memory for the TTL.
+- Installer is a **10-step monolith** at repo root (`install.sh`) with the Touch-ID
+  probe, password-mode SSH (`install_ssh_password_mode`), and the session-unlock
+  prompt — NOT yet the `src/install.sh` + `src/setup/NN-*.sh` refactor below.
+
+### Build status (reality vs the §1 checklist, which still reads 0%)
+| Component | Built now | This plan's target |
+|---|---|---|
+| env / otp / ssh-gorilla.sh | ✅ on-demand extract + fan-out cache (+ password mode) | — |
+| touchid-gorilla | ✅ wrap/unwrap/totp/ssh-generate + `master-prompt` (H4 secure input) | (fan-out lives in bash `fan_out_all`, not a touchid subcommand) |
+| s3c-ssh-agent | ✅ chip-wrap / se-born / password + ADD_IDENTITY + peer-cred check + RSA | H1 bulk-buffer mlock |
+| s3c-session-agent | ✅ NEW (password mode) + RSA signing | converge to extract-in-agent (B1–B3) |
+| Per-secret blob fan-out pipeline | ✅ `fan_out_all` + one-unlock XML (`s3c-kdbx-parse`) + `.session-valid` + reboot-staleness | chip screen-lock/logout wipe |
+| s3c-gorilla umbrella CLI | ✅ status/doctor/wipe/lock/list/setup/uninstall/scan/keychain | — |
+| install.sh → src/setup/NN-*.sh | ✅ orchestrator + 11 step files + vault-key verify | — |
+| Hardening H1–H4 | 🟡 H4 done; H1 bulk-buffer mlock + #43 binary-pin remain | — |
+
+### Dual-mode model (the merge's spine)
+Mode is chosen by the installer's LocalAuthentication probe → `have_chip` at runtime:
+- **Chip mode** (Touch ID): this plan's design, unchanged. Per-decrypt Touch ID,
+  per-secret coercion scope.
+- **Password mode** (no SE): master-pw-gated, no per-decrypt hardware gate. Optional
+  session-unlock holds the pw per-tty. **Target security = mirror chip-mode's
+  principles** (extract in-agent, cache per-secret, pw never returned to bash). The
+  shipped session-unlock is the weaker interim (returns pw via `get`, caches the
+  master pw) — see backlog B1–B3.
+
+### v0.14 follow-up backlog (genuinely-new items; chip-mode-owned items not repeated)
+
+> **✅ Shipped + compile-verified (password-mode hardening, HP0/HP1/HP2):**
+> B1, B2, B3, B4, B6, B7, B8, B9, B10, B11, B12, B13, B14, B17, H5, H6.
+> **HP2 (B3) — one per-tty agent serves env + otp + ssh, single prompt per tab:**
+> `s3c-session-agent` binds a second `<hash>.ssh.sock` and serves the ssh-agent
+> protocol (Ed25519/ECDSA-P256) via the shared `src/ssh-agent-core.swift`, signing
+> with the held master pw; OTP routed through the agent (`list` + `extract-otp`);
+> `ssh-gorilla.sh` points SSH_AUTH_SOCK at the per-tty socket. Password-mode SSH no
+> longer installs a LaunchAgent.
+> **Remaining:** B5 (audit-session peer check), B15 (doc-only). **Done since:** I-a…I-f
+> (installer hygiene → P4); **RSA SSH now signs in password mode** (Ed25519/ECDSA/RSA),
+> via the shared `ssh-rsa.swift` lifted out of `s3c-ssh-agent.swift` (one copy in both
+> agents), plus shared `ssh-wire.swift` wire helpers (#13).
+
+| ID | Item | Lands in |
+|---|---|---|
+| B1 | Session-agent `extract-env`/`extract-otp` — pw never leaves the agent | §Architecture (password mode) |
+| B2 | Cache extracted secrets per-name, not the master pw | §Architecture (password mode) |
+| B3 | Unify env/otp/ssh on one holder (1 prompt); converge toward fan-out | §Architecture (password mode) |
+| B4 | s3c-ssh-agent: set `RLIMIT_CORE=0` + mlock the pw cache (README claims it; only the session agent is hardened today) | §Security hardening |
+| B5 | Session-agent socket peer check: bind to the audit/login session, not just same-uid | §Security hardening |
+| B6 | Unify the TTL clock — session-agent and ssh-agent tick independently; one timer / shared activity reset | §Architecture (password mode) |
+| H5 | Session-agent in-memory pw via CryptoKit AES-GCM/HKDF, not hand-rolled XOR | §Security hardening |
+| H6 | s3c-ssh-agent password cache → zeroable buffer, not Swift String | §Security hardening |
+| B7 | Serial-queue the new-agent globals (accept/poll/signal races) | §Security hardening |
+| B8 | keepassxc-cli path via `command -v` (not hardcoded /usr/local/bin) | §Files / agents |
+| B9 | `_NSGetExecutablePath` for session-agent self-path | §Files / agents |
+| B10 | Per-tty socket EADDRINUSE / TOCTOU handling | §Security hardening |
+| B11 | `env-gorilla --clear <proj>` guard on `have_chip` (no touchid call in pw mode) | §Files |
+| B12 | Agent logging → `~/Library/Logs/s3c-gorilla/` | §Files / agents |
+| B13 | bats coverage for `get_master_pw` + agent start/get/stop | §4 Validation |
+| B14 | Buildable/CI gate so Swift stops shipping compile-unverified | §4 Validation |
+| B15 | Document chip × session-unlock (enabling on TID bypasses per-decrypt gate → default OFF there) | §Config knobs |
+| B17 | Check `mlock` return values (currently ignored → silent lock failure) | §Security hardening |
+| I-a | Installer: factor shared SSH agent compile + setup (chip vs password ~80% shared) | §Pre-implementation refactor |
+| I-b | Installer: `set_config KEY VALUE` helper | §Pre-implementation refactor |
+| I-c | Installer: idempotent re-import (don't re-backup ~/.ssh every run) | §Pre-implementation refactor |
+| I-d | `s3c-gorilla uninstall` command (doctor already planned) | §s3c-gorilla CLI |
+| I-e | Installer: partial-failure trap (report installed vs skipped) | §Pre-implementation refactor |
+| I-f | Installer: portable `sed -i` wrapper (repo dev'd on Linux) | §Pre-implementation refactor |
+
+## Progress
+
+**Overall ~70% of planned scope.** The day-to-day suite (P0–P1) is **shipped and usable**,
+password mode is hardened + unified (HP0/HP1/HP2: one prompt per tab for env+otp+ssh),
+and the umbrella CLI, fan-out (incl. the one-unlock XML fast path), `--paranoid`,
+secure-input, KeePassXC GUI push, and the installer refactor have all landed. RSA SSH
+keys now sign in password mode too. What remains is the binary-integrity triple-layer
+(#43: 0555 + SecCodeCheckValidity + cdhash pin), the bulk-XML-buffer `mlock` (H1), and
+the chip-mode screen-lock / logout blob wipes.
+
+| # | Phase | Status | % |
+|:--:|---|:--:|--:|
+| P0 | Verification gate (keepassxc-cli XML export) | ✅ BUILT | 100% |
+| P1 | Core suite + dual mode (env/otp/ssh/touchid + password mode + session-unlock + 10-step installer) | ✅ BUILT | 100% |
+| P2 | Chip-mode fan-out pipeline — `fan_out_all` (one pw → wrap env/otp/ssh) + `.session-valid` sentinel + reboot-staleness + **one-unlock XML fast path** (`s3c-kdbx-parse`) + `--paranoid` + secure-input all BUILT; chip screen-lock/logout blob wipe remain | 🟡 PARTIAL | ~80% |
+| P3 | `s3c-gorilla` umbrella CLI — status/doctor/wipe/lock/list/setup/uninstall/scan/**keychain** all BUILT | ✅ BUILT | ~95% |
+| P4 | install.sh → `src/setup/NN-*.sh` refactor — orchestrator (59L) + 00-common + 11 step files; SSH import factored (HR-6 #15/#16) + vault-key verify | ✅ BUILT | ~90% |
+| P5 | Security hardening (H1–H6 + concerns) — H4 secure-input, H5/H6, RLIMIT_CORE/mlock-checks, peer-cred done; #43 binary-pin + H1 bulk-buffer mlock remain | 🟡 PARTIAL | ~55% |
+| P6 | KeePassXC GUI push (ADD_IDENTITY / REMOVE_ALL) — push + zero-Touch-ID sign for Ed25519/ECDSA/**RSA** | ✅ BUILT | ~90% |
+| P7 | v0.14 follow-up backlog (B1–B17, I-a–I-f) — password-mode hardening HP0/HP1/HP2 done | 🟡 PARTIAL | ~85% |
+
+Legend: ✅ BUILT · 🟡 PARTIAL · ⬜ PLANNED
+
+## 1. Implementation checklist (by phase)
+
+### P0 — Verification gate ✅
+| Status | Item | Notes |
+|:--:|---|---|
+| ✅ | keepassxc-cli XML export verification (GATE, Concern #24) | GREEN 2026-04-24 (kpxc 2.7.12); budget 10→32 MiB, Compressed="True" (needs Foundation.Compression), wrong-cred → exit 1 + zero stdout |
+
+### P1 — Core suite + dual mode ✅ (v0.14, shipped — was NOT in the original plan)
+| Status | Item | Notes |
+|:--:|---|---|
+| ✅ | env-gorilla / otp-gorilla / ssh-gorilla.sh | on-demand extract; **password mode** via `have_chip`; otp via `keepassxc-cli show -t` |
+| ✅ | touchid-gorilla | wrap / unwrap / totp / ssh-generate (Secure Enclave) |
+| ✅ | s3c-ssh-agent | ssh-agent protocol; `chip-wrap` / `se-born` / **`password`** key modes |
+| ✅ | s3c-session-agent (NEW) | per-tty, memory-only master-pw holder (`start`/`get`/`stop`); obfuscated + mlock'd; TTL / lock / logout / parent-death wipe |
+| ✅ | session-unlock wiring | `get_master_pw` in banners.sh; `GORILLA_SESSION_UNLOCK` (true/false) |
+| ✅ | installer (10-step monolith) | LocalAuthentication Touch-ID probe; `install_ssh_password_mode`; session-unlock prompt |
+| ✅ | TUI / banners | banners / godfather / drunken-bishop (bg unlock anim) / colorize |
+
+### P2 — Chip-mode fan-out pipeline 🟡 (core built; chip-side wipes remain)
+| Status | Item | Notes |
+|:--:|---|---|
+| ✅ | fan-out routine | built as bash `fan_out_all` (banners.sh), not a touchid subcommand: one master-pw → extract every SSH/ENV/2FA → chip-wrap each into `/tmp/s3c-gorilla/*.blob` |
+| ✅ | XML bulk export fan-out (§2a) | `keepassxc-cli export -f xml` piped once to `s3c-kdbx-parse` (Swift two-pass XMLParser) — one unlock for the whole vault |
+| ✅ | session-valid sentinel (§2c) | `.session-valid` written only when ≥1 secret fanned out |
+| ✅ | per-tool blobs (no master blob) | `ssh-*` / `env-*` / `otp-*` each chip-wrapped; no aggregate master blob |
+| 🟡 | per-blob freshness + reboot-staleness | `_blob_fresh` boottime check on env/otp/ssh; explicit 7200s mtime-TTL not separately wired |
+| ✅ | flock concurrent-create lock | prevents duplicate master-pw prompts |
+| ✅ | `--paranoid` flag (env/otp) | skip cache, extract one secret, wipe |
+| 🟡 | secure pw prompt | `touchid-gorilla master-prompt` (H4) built; the `--pw-dialog`/`--pw-terminal` knobs were dropped (never built) |
+| 🟡 | logout SIGTERM wipe | session agent SIGTERM→wipe (password mode) done; chip-blob wrap-clear on logout ⬜ |
+| ⬜ | screen-lock wipe (`GORILLA_WIPE_ON_SCREEN_LOCK`) | session agent wipes on lock; chip `/tmp` blob wipe-on-lock unbuilt |
+| ⬜ | only fan-out mutates /tmp (#25) · RunAtLoad wipe + mtime-vs-boottime (#26) | tools never wipe; agent rm -rf on login under flock |
+| ⬜ | idempotent lockfile/dir (#28) · unwrap retry-via-fanout (#29) · iCloud-evicted probe (#30) · full otpauth URI (#31) · chip-wrap keys.json (#42) · fan-out progress sentinel (#41) | — |
+
+### P3 — `s3c-gorilla` umbrella CLI 🟡 (operational core shipped — `src/s3c-gorilla`, dual-mode)
+| Status | Item | Notes |
+|:--:|---|---|
+| ✅ | dispatcher + `status` (default) | mode, active per-tty sessions, binaries, vault, config paths. (cdhash-vs-pin deferred — #43 unbuilt.) |
+| ✅ | `doctor` | deps (keepassxc-cli/notifier), codesign verify, config sourceable, agent log scan, mode consistency |
+| ✅ | `wipe` + `lock` | wipe = `pkill -TERM` all session agents + clear sockets (+ chip wrap-clear/restart); lock = `stop` this tty |
+| ✅ | `list ssh/env/otp` | chip: strip `/tmp/*.blob`; password: `s3c-session-agent list`. Names only |
+| ✅ | `setup` | re-exec installer from `/usr/local/share/s3c-gorilla/install-source` |
+| ✅ | `uninstall` (I-d) | remove binaries/agents/`~/.s3c-gorilla`; opt-in config+.zprofile; kdbx untouched |
+| ✅ | `keychain check` / `fix` / `import` | `src/lib/s3c-keychain.sh`; parses `security dump-keychain`, categorizes git/ssh/cloud, verify-in-kdbx → delete/import. REDACTED. (Auto-invoke-at-install-end deferred.) |
+| ✅ | `scan --env/--ssh/--git/--shell-history/--all` | `src/lib/s3c-scan.sh`; REDACTED (location + pattern name only, never secret bytes); Ed25519/ECDSA/RSA key encryption probe, git pickaxe, history grep |
+
+### P4 — install.sh → `src/setup/NN-*.sh` refactor ⬜ (current installer is a working monolith)
+| Status | Item | Notes |
+|:--:|---|---|
+| ⬜ | refactor to `src/install.sh` + modular `src/setup/*.sh` (≤200-line main); curl-bash self-bootstrap | must preserve v0.14 reality (10 steps, password mode, session-unlock) |
+| ⬜ | step files: 09-database (iCloud scan + >24 MiB warn), 11-pw-prompt, 12-screen-lock, 13-ssh-mode, 14-launchagent (0555 + cdhash pin), 15-permissions, 16-s3c-gorilla | — |
+| ⬜ | Step-0 gate: new installer matches the monolith end-to-end on a dev Mac | — |
+| ⬜ | step-file failure propagation (#34) · numeric glob sort + pad lint (#35) · NUL paths + `printf %q` config write (#37) · terminal-notifier pin + alerter fallback (#36) | — |
+| ⬜ | `set_config KEY VALUE` helper (I-b) · idempotent re-import (I-c) · partial-failure trap (I-e) · portable `sed -i` wrapper (I-f) · factor shared SSH compile+setup (I-a) | NEW v0.14 installer hygiene |
+
+### P5 — Security hardening 🟡 (some shipped in v0.14)
+| Status | Item | Notes |
+|:--:|---|---|
+| 🟡 | H1 — zero secret buffers in Swift | session-agent zeros on use; fan-out XML buffer mmap+mlock+zero unbuilt |
+| ✅ | H2 — Security.framework RSA signing (#22) | `signRSA` uses `SecKeyCreateSignature` (rsa-sha2-256/512); BigInt only converts OpenSSH→PKCS#1 (dp/dq/qinv), not the signature itself. Shared `ssh-rsa.swift` |
+| ⬜ | H3 — hardened runtime + `--timestamp` on all codesign | still ad-hoc signed |
+| ✅ | H4 — secure-input master-pw prompt (`touchid-gorilla master-prompt`, EnableSecureEventInput) | wired into `ask_master_pw` |
+| ✅ | H5 — session-agent in-memory pw via AES-GCM (HP1) | CryptoKit sealed box; key+sealed in separate mlock'd buffers |
+| ✅ | H6 — zeroable pw buffer in s3c-ssh-agent password cache (HP1) | `gPwCache` now `[UInt8]`, zeroed via `clearPwCache()` |
+| 🟡 | #23 — RLIMIT_CORE + mlock + early-zero | both agents set RLIMIT_CORE=0 (B4) + mlock-return-checks (B17) done; fan-out XML mlock unbuilt |
+| 🟡 | #40 — peer-credential whitelist | session-agent uid `getpeereid` done; audit-session (B5) + ADD_IDENTITY bundle-ID whitelist unbuilt |
+| ⬜ | #18 signal handlers around SecureEventInput · #19 flock timeout · #20 pushed-keys heartbeat+max-age · #27 90/5 Data+wipe · #33 RSA byte-identical harness · #39 agent-health one-liner · #43 binary integrity triple-layer (0555 + SecCodeCheckValidity + cdhash pin) | — |
+| ✅ | B7 thread-safety (ssh-agent `pwCacheQueue`) · B10 socket EADDRINUSE/TOCTOU (HP1) | concurrent-connection cache race fixed; double-start handled |
+
+### P6 — KeePassXC GUI push ✅
+| Status | Item | Notes |
+|:--:|---|---|
+| ✅ | ADD_IDENTITY handler | agent accepts KeePassXC SSH-Agent push; Ed25519 / ECDSA / **RSA**; zero-Touch-ID sign from the in-memory pushed-keys cache |
+| ✅ | REMOVE_IDENTITY + REMOVE_ALL | pushed keys dropped on KeePassXC lock / TTL / SIGTERM; zeroable buffers |
+
+### P7 — v0.14 follow-up backlog ⬜
+See the §0 backlog table (B1–B17, I-a–I-f) — password-mode convergence, agent hardening, installer hygiene, tests/CI.
 
 ## 2. User TODO / Verify
 
@@ -291,6 +412,18 @@ Each is a "session gate" check:
 | [ ] | `15-permissions.sh` triggers the terminal-notifier prompt on a clean-permissions Mac (Accessibility/Automation no longer requested after Phase 3 drop) |
 | [ ] | `touchid-gorilla fan-out` works standalone: 1 Touch ID + master-pw → blobs appear for every kdbx entry under SSH/, ENV/, 2FA/ |
 | [ ] | `touchid-gorilla fan-out` under concurrency (2 tools race) prompts master pw exactly ONCE (flock works) |
+
+**Password mode + session-unlock (NEW v0.14):**
+
+| Done | Check |
+|:---:|---|
+| [ ] | On a no-SE Mac with `GORILLA_SESSION_UNLOCK=true`: `env-gorilla X -- printenv` prompts once, `otp-gorilla Y` right after returns a code with NO second prompt; a second terminal tab prompts again (per-tty) |
+| [ ] | `getrlimit(RLIMIT_CORE)` returns `{0,0}` on `s3c-session-agent`; `gcore`/`vmmap` of the agent shows no cleartext master pw (only the obfuscated/sealed buffer) (H5) |
+| [ ] | Lock screen / close tab / exceed TTL → next tool re-prompts (`pgrep s3c-session-agent` empty after tab close) |
+| [ ] | Password-mode `ssh <host>`: vault key served by s3c-ssh-agent, one master-pw prompt per session, subsequent signs reuse the cached key |
+| [ ] | `env-gorilla --clear <proj>` in password mode does NOT invoke `touchid-gorilla` (B11) |
+| [ ] | **bats** suite covers `get_master_pw` gating (on/off, agent present/absent) and agent `start`/`get`/`stop` (B13) |
+| [ ] | CI / build gate compiles every `.swift` (incl. s3c-session-agent + the password branch) before merge — no compile-unverified Swift ships (B14) |
 
 ---
 
@@ -772,6 +905,33 @@ Env / otp unchanged — KeePassXC has no equivalent GUI-push for
 `.env` contents or TOTP secrets. Those always use the per-tool
 chip-wrap blob flow.
 
+### 8. Password mode + session-unlock (no Secure Enclave, NEW v0.14)
+
+Everything above assumes Touch ID + Secure Enclave. On machines without it
+(Intel/Hackintosh, `have_chip` false), the suite runs **password mode**:
+
+- **env/otp** extract from the kdbx on each call with the master password (no `.s3c`
+  chip-wrap cache; KeePassXC computes TOTP via `show -t`). The mode signal is the
+  presence of the `touchid-gorilla` binary (`have_chip`).
+- **session-unlock (optional, off by default on TID machines)** — `s3c-session-agent`
+  is a per-tty, memory-only daemon that holds the master pw obfuscated + mlock'd and
+  serves it to env/otp/ssh so they stop re-prompting within a terminal tab. Socket at
+  `~/.s3c-gorilla/session/<sha256(tty)>.sock` (0700, same-uid via `getpeereid`). TTL =
+  `GORILLA_UNLOCK_TTL`; wiped on TTL / SIGTERM (logout) / `com.apple.screenIsLocked` /
+  parent-shell death. Spawned by re-exec (not fork — GCD-after-fork crashes on Darwin).
+- **ssh** — `s3c-ssh-agent` `password` key mode: extracts the SSH key from the kdbx
+  with the master pw (reusing the chip-wrap signers, no SE), caches it in memory for
+  the TTL. Prompts via osascript (LaunchAgent has no tty).
+
+**Target state (backlog B1–B3):** converge this to chip-mode's principles — the agent
+extracts internally (pw never returned to bash), caches per-secret not the master pw,
+and one holder serves all three tools (today the per-tty session agent and the
+per-login ssh-agent prompt separately → up to two prompts). **Security caveat
+(B15):** session-unlock is a grace period with no per-decrypt hardware gate; enabling
+it on a Touch ID machine bypasses that gate, so it defaults OFF there (opt-in) and ON
+in password mode. Hardening for the new agents: H5 (AES-GCM pw), H6 (zeroable ssh
+buffer), B7 (thread-safety), B10 (socket race), B17 (mlock checks).
+
 ## Files
 
 ### Modified
@@ -1107,6 +1267,13 @@ GORILLA_WIPE_ON_SCREEN_LOCK=1
 # Colon-separated roots for `s3c-gorilla scan`. Defaults cover
 # common project layouts; add your own if you keep code elsewhere.
 GORILLA_SCAN_ROOTS="$HOME/Projects:$HOME/Code:$HOME/Workspaces:$HOME/src"
+
+# Session-unlock (NEW v0.14, password mode). true = hold the master pw in the
+# per-tty s3c-session-agent so env/otp/ssh stop re-prompting within a tab.
+# Set by the installer. Defaults: true in password mode, false on Touch ID
+# machines (B15: enabling it there bypasses the per-decrypt fingerprint gate).
+# Shares GORILLA_UNLOCK_TTL above for its timeout.
+GORILLA_SESSION_UNLOCK="false"
 ```
 
 No mode knob. The eager-unified flow is the only flow. `--paranoid`
@@ -1176,7 +1343,7 @@ Flow:
      ```
      Multiple KeePassXC databases found in iCloud:
        1) /Users/yaro/Library/Mobile Documents/…/personal.kdbx
-       2) /Users/yaro/Library/Mobile Documents/…/gorilla_tunnel.dat.kdbx
+       2) /Users/yaro/Library/Mobile Documents/…/KeePassDB.kdbx
        3) /Users/yaro/Library/Mobile Documents/…/shared/work.kdbx
 
      Pick one [1-3, 0=keep config default]:
@@ -1580,6 +1747,33 @@ writes the bytes to stdout (piped to caller), unsets memory.
 terminal) all call `touchid-gorilla master-prompt` instead of
 doing `read -s` themselves. One code path, secure input always.
 
+### H5 — Session-agent in-memory master pw (password mode, NEW v0.14)
+
+`s3c-session-agent` holds the master pw obfuscated in mlock'd memory. v0.14 ships a
+hand-rolled XOR/SHA256-CTR keystream — replace with **CryptoKit AES-GCM** (sealed box
+from `SymmetricKey(size: .bits256)`) or HKDF so the primitive is audited, not bespoke.
+`RLIMIT_CORE=0` is set; also fold in:
+- **B7** — guard the new agents' shared globals (`gBox`/`gLastActivity`/`gParentPID`
+  in s3c-session-agent; `gPwCache`/`gKeyCache` in s3c-ssh-agent) with a serial
+  `DispatchQueue`; today they're touched from the accept loop, the TTL/poll thread,
+  and signal handlers without locking.
+- **B10** — handle `EADDRINUSE`/TOCTOU when two tabs race to bind the same per-tty
+  socket (the get-before-start idempotency check is racy); fall back to the existing
+  agent rather than failing.
+- **B1/B2/B3** — converge the agent to **extract internally** (`extract-env`/
+  `extract-otp` run keepassxc-cli inside the agent; the pw never returns to bash) and
+  cache **per-secret**, not the master pw — so password mode matches chip-mode's
+  per-secret coercion scope. This replaces the interim `get` subcommand.
+- **B17** — check `mlock` return values (currently ignored → silent failure).
+
+### H6 — Zeroable password buffer in s3c-ssh-agent (password mode, NEW v0.14)
+
+The `password` key mode caches the master pw as a Swift `String` (`gPwCache`) — not
+zeroable, copied around the heap, survives past use. Replace with a `Data`/byte buffer
+wiped via the existing `zeroOut()` + `defer`, consistent with H1. The cache TTL
+(`GORILLA_UNLOCK_TTL`) must share one clock with the session agent (today they tick
+independently — backlog #6).
+
 ## Pre-implementation — refactor install.sh
 
 Before any code changes, split the current monolithic `install.sh`
@@ -1802,26 +1996,25 @@ a step in `install.sh`. The installer just ships the result.
 ## Build strategy + execution model
 
 See [plan/BUILD_STRATEGY.md](BUILD_STRATEGY.md) for the full
-7-point rule set. Non-negotiable summary:
+rule set. Non-negotiable summary:
 
-1. **Never touch `master`.** All work goes through `develop`.
-2. **Branch-per-phase.** `phase/0-kcli-probe`, `phase/1-fanout`,
-   `phase/2-kpxc-push`. Merge into `develop` only after the
-   phase's PLAN.md §4 validation rows pass.
-3. **Red-first, one concern at a time.** Tests already
+1. **Work on the current branch.** No develop branch and no
+   branch-per-phase — land each phase's diff once its PLAN.md §4
+   validation rows pass. Commit or push only when the user asks.
+2. **Red-first, one concern at a time.** Tests already
    skip-stub most concerns. Remove a skip → ship the smallest
-   diff that passes → commit → next. The 43-concern list IS
+   diff that passes → commit → next. The concern list IS
    the backlog.
-4. **Parallel subagents for genuinely independent work.** Spin
+3. **Parallel subagents for genuinely independent work.** Spin
    them in one turn when entering a phase. Dependencies must be
    zero across panes.
-5. **`/review` after every phase merge** — de-slop first
+4. **`/review` after every phase** — de-slop first
    (CLAUDE.md rule), then code review. No Phase-N cruft into
    Phase-N+1.
-6. **Dogfood as soon as it compiles.** Real `id_rsa` + real
+5. **Dogfood as soon as it compiles.** Real `id_rsa` + real
    `ssh somehost` the minute fan-out works on one secret.
-7. **Keep this file alive.** Tick `[x]` + bump success % on
-   every closed concern. Add rows when new issues surface.
+6. **Keep this file alive.** Update the P0–P7 status + % on
+   every closed item. Add rows when new issues surface.
    Stale plan mid-build > no plan.
 
 ### Execution via `cld --tmux-team`
@@ -1851,13 +2044,17 @@ branch.
 
 ## Implementation phases
 
-**Ordering (strict):**
-1. Refactor `install.sh` per "Pre-implementation" section. Gate: new installer must match old installer's behaviour on a dev Mac before any feature work begins.
-2. **Phase 0 — `keepassxc-cli export --format xml` verification (GATE, Concern #24).** Must pass before Phase 1 starts. See dedicated section below.
-3. Phase 1 — eager fan-out extraction + per-blob TTL + `--paranoid` + H1-H4 security hardening.
-4. Phase 2 — KeePassXC SSH-Agent push integration.
+**Ordering** (see the Progress tracker up top for live status; P0–P1 already shipped):
+1. ✅ **P0** — `keepassxc-cli export --format xml` verification (GATE, Concern #24). Done. See dedicated section below.
+2. ✅ **P1** — core suite + dual mode (env/otp/ssh/touchid + password mode + session-unlock + 10-step installer). Shipped (v0.14), outside the original plan.
+3. **P2** — chip-mode fan-out pipeline (eager fan-out + per-blob TTL + `--paranoid`). The original core.
+4. **P5** — security hardening (H1–H6 + concerns), interleaved with P2 (its blobs need H1/H3/#23).
+5. **P3** — `s3c-gorilla` umbrella CLI.
+6. **P4** — install.sh → `src/setup/NN-*.sh` refactor. The old "refactor first, before any feature work" gate **no longer applies** — features already shipped on the monolith; the refactor must now MATCH that shipped behaviour.
+7. **P6** — KeePassXC SSH-Agent push integration.
+8. **P7** — v0.14 follow-up backlog (B1–B17, I-a–I-f), folded into P2/P4/P5 where each belongs.
 
-(Phase 3 — KeePassXC unlock refreshes TTL — **dropped**. See
+(The earlier "Phase 3 — KeePassXC unlock refreshes TTL" is **dropped**. See
 Architecture §6: TTL is user-tunable via `GORILLA_UNLOCK_TTL`.
 Concerns #12/#21/#32/#38 marked obsolete.)
 

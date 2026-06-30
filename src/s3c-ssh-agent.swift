@@ -4,9 +4,8 @@
 // Listens on ~/.s3c-gorilla/agent.sock. Every sign request fires Touch ID.
 // Keys never persist in agent memory across requests.
 //
-// Mode 1 supports Ed25519 and ECDSA-P256 key types. RSA (legacy) falls
-// through the fallback path (SSH_AGENT_FAILURE → ssh tries next method).
-// Recommended RSA users migrate to Ed25519 or use Mode 2 (SE-born).
+// Mode 1 supports Ed25519, ECDSA-P256, and RSA (rsa-sha2-256/512) key types.
+// RSA signing is shared with the password-mode agent via ssh-rsa.swift (#RSA).
 
 import Foundation
 import Security
@@ -23,6 +22,35 @@ let pubDir = "\(agentDir)/pubkeys"
 let blobDir = "/tmp/s3c-gorilla"
 let touchidPath = "/usr/local/bin/touchid-gorilla"
 
+// Resolve keepassxc-cli across Homebrew layouts (Apple Silicon /opt/homebrew vs
+// Intel /usr/local) and finally $PATH. (B8)
+func keepassxcPath() -> String {
+    for c in ["/opt/homebrew/bin/keepassxc-cli", "/usr/local/bin/keepassxc-cli"]
+    where FileManager.default.isExecutableFile(atPath: c) { return c }
+    if let path = ProcessInfo.processInfo.environment["PATH"] {
+        for dir in path.split(separator: ":") {
+            let p = "\(dir)/keepassxc-cli"
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+    }
+    return "/usr/local/bin/keepassxc-cli"
+}
+
+let sshLogPath = "\(homeDir)/Library/Logs/s3c-gorilla/s3c-ssh-agent.log"
+
+// Best-effort debug log (B12). Never throws.
+func dlog(_ msg: String) {
+    let dir = "\(homeDir)/Library/Logs/s3c-gorilla"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                             attributes: [.posixPermissions: 0o700])
+    guard let data = "[\(Date())] \(msg)\n".data(using: .utf8) else { return }
+    if let fh = FileHandle(forWritingAtPath: sshLogPath) {
+        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+    } else {
+        try? data.write(to: URL(fileURLWithPath: sshLogPath))
+    }
+}
+
 // MARK: - ssh-agent protocol constants
 
 let SSH_AGENTC_REQUEST_IDENTITIES: UInt8 = 11
@@ -32,11 +60,133 @@ let SSH_AGENT_SUCCESS: UInt8 = 6
 let SSH_AGENT_IDENTITIES_ANSWER: UInt8 = 12
 let SSH_AGENT_SIGN_RESPONSE: UInt8 = 14
 
-let SSH_AGENT_RSA_SHA2_256: UInt32 = 2
-let SSH_AGENT_RSA_SHA2_512: UInt32 = 4
+// RSA hash flags + BigN/DER/signRSA/convertOpenSSHRSAToPKCS1 now live in the shared
+// ssh-rsa.swift (compiled into both agents), so password mode can sign RSA too (#RSA).
 
 // SE key tag prefix shared with touchid-gorilla.swift
 let sshKeyTagPrefix = "s3c-gorilla.ssh."
+
+// MARK: - Pushed keys (KeePassXC GUI integration, P6 + hardening)
+// KeePassXC pushes SSH keys via ADD_IDENTITY when you unlock the app. We hold them in memory
+// and sign WITHOUT Touch ID (you authed via the GUI). Hardened: the raw key bytes are kept in a
+// zeroable buffer and memset on clear (#1); an idle TTL + screen lock + REMOVE_ALL + SIGTERM all
+// drop them (#2); the cache is capped (#11). Ed25519 / ECDSA-P256 / RSA supported (#5).
+let SSH_AGENTC_ADD_IDENTITY: UInt8 = 17
+let SSH_AGENTC_REMOVE_IDENTITY: UInt8 = 18
+let SSH_AGENTC_REMOVE_ALL_IDENTITIES: UInt8 = 19
+let SSH_AGENTC_ADD_ID_CONSTRAINED: UInt8 = 25
+let pushedMax = 64
+
+struct PushedKey {
+    let keyType: String     // ssh-ed25519 | ecdsa-sha2-nistp256 | ssh-rsa
+    var priv: [UInt8]       // zeroable: ed25519 seed(32) | ecdsa d(32) | rsa PKCS#1 DER
+    var aux: [UInt8]        // ecdsa: Q (0x04||X||Y); else empty
+    let comment: String
+    var added: Date
+    mutating func zero() { for i in priv.indices { priv[i] = 0 }; for i in aux.indices { aux[i] = 0 } }
+}
+var gPushed: [Data: PushedKey] = [:]   // pubBlob -> key
+let pushedQueue = DispatchQueue(label: "s3c-gorilla.pushed")
+
+func pushedGet(_ blob: Data) -> PushedKey? { pushedQueue.sync { gPushed[blob] } }
+func pushedList() -> [(Data, String)] { pushedQueue.sync { gPushed.map { ($0.key, $0.value.comment) } } }
+func pushedClear() { pushedQueue.sync { for k in gPushed.keys { gPushed[k]?.zero() }; gPushed.removeAll() } }  // memset then drop (#1)
+func pushedExpire(_ ttl: TimeInterval) {   // idle TTL (#2)
+    let now = Date()
+    pushedQueue.sync { for (b, pk) in gPushed where now.timeIntervalSince(pk.added) > ttl { gPushed[b]?.zero(); gPushed[b] = nil } }
+}
+func pushedAdd(_ blob: Data, _ key: PushedKey) -> Bool {
+    pushedQueue.sync {
+        if gPushed[blob] == nil && gPushed.count >= pushedMax { return false }   // cap (#11)
+        gPushed[blob]?.zero(); gPushed[blob] = key; return true
+    }
+}
+
+// Rebuild the live key from the stored bytes, sign, zero any rebuilt copy (#1).
+func pushedSign(_ pk: PushedKey, _ data: Data, _ flags: UInt32) -> Data? {
+    switch pk.keyType {
+    case "ssh-ed25519":
+        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: Data(pk.priv)),
+              let sig = try? key.signature(for: data) else { return nil }
+        var out = Data(); out.append(wireString("ssh-ed25519")); out.append(wireString(Data(sig))); return out
+    case "ecdsa-sha2-nistp256":
+        var raw = Data(pk.aux); raw.append(contentsOf: pk.priv)   // Q || D
+        defer { raw.resetBytes(in: 0..<raw.count) }
+        let attrs: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                                    kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+                                    kSecAttrKeySizeInBits as String: 256]
+        var e: Unmanaged<CFError>?
+        guard let secKey = SecKeyCreateWithData(raw as CFData, attrs as CFDictionary, &e),
+              let der = SecKeyCreateSignature(secKey, .ecdsaSignatureMessageX962SHA256, data as CFData, &e) as Data?,
+              let (rr, ss) = parseECDSADer(der) else { return nil }
+        var inner = Data(); inner.append(wireMpint(rr)); inner.append(wireMpint(ss))
+        var out = Data(); out.append(wireString("ecdsa-sha2-nistp256")); out.append(wireString(inner)); return out
+    case "ssh-rsa":
+        return signRSA(pkcs1DER: Data(pk.priv), data: data, flags: flags)
+    default: return nil
+    }
+}
+
+func registryHasPubBlob(_ blob: Data) -> Bool {
+    for e in loadRegistry() { if pubBlob(for: e) == blob { return true } }
+    return false
+}
+
+func handleAddIdentity(_ body: Data, constrained: Bool = false) -> Data {
+    var r = Reader(data: body)
+    guard let typeData = r.readString(), let ktype = String(data: typeData, encoding: .utf8) else {
+        dlog("ADD_IDENTITY: could not read key type (\(body.count)b)"); return framed(Data([SSH_AGENT_FAILURE]))
+    }
+    var blob = Data(); var pk: PushedKey?
+    switch ktype {
+    case "ssh-ed25519":
+        guard let pub = r.readString(), let priv = r.readString(), priv.count >= 32 else {
+            dlog("ADD_IDENTITY ed25519: short fields"); return framed(Data([SSH_AGENT_FAILURE]))
+        }
+        let comment = r.readString().flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        blob.append(wireString("ssh-ed25519")); blob.append(wireString(pub))
+        pk = PushedKey(keyType: "ssh-ed25519", priv: Array(priv.subdata(in: 0..<32)), aux: [], comment: comment, added: Date())
+    case "ecdsa-sha2-nistp256":
+        guard let _ = r.readString(), let q = r.readString(), var d = r.readMpint() else {
+            dlog("ADD_IDENTITY ecdsa: short fields"); return framed(Data([SSH_AGENT_FAILURE]))
+        }
+        while d.count > 32 { d.removeFirst() }                       // #18 robust scalar
+        while d.count < 32 { d = Data([0]) + d }
+        guard q.count == 65 else { dlog("ADD_IDENTITY ecdsa: bad point \(q.count)b"); return framed(Data([SSH_AGENT_FAILURE])) }
+        let comment = r.readString().flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        blob.append(wireString("ecdsa-sha2-nistp256")); blob.append(wireString("nistp256")); blob.append(wireString(q))
+        pk = PushedKey(keyType: "ecdsa-sha2-nistp256", priv: Array(d), aux: Array(q), comment: comment, added: Date())
+    case "ssh-rsa":                                                  // #5 RSA pushes
+        guard let n = r.readMpint(), let e = r.readMpint(), let dd = r.readMpint(),
+              let iqmp = r.readMpint(), let p = r.readMpint(), let qq = r.readMpint() else {
+            dlog("ADD_IDENTITY rsa: short fields"); return framed(Data([SSH_AGENT_FAILURE]))
+        }
+        let comment = r.readString().flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        var ossh = Data()                                            // rebuild OpenSSH RSA private wire
+        ossh.append(wireString("ssh-rsa")); ossh.append(wireMpint(n)); ossh.append(wireMpint(e))
+        ossh.append(wireMpint(dd)); ossh.append(wireMpint(iqmp)); ossh.append(wireMpint(p)); ossh.append(wireMpint(qq))
+        guard let pkcs1 = convertOpenSSHRSAToPKCS1(ossh) else {
+            dlog("ADD_IDENTITY rsa: CRT conversion failed"); return framed(Data([SSH_AGENT_FAILURE]))
+        }
+        blob.append(wireString("ssh-rsa")); blob.append(wireMpint(e)); blob.append(wireMpint(n))
+        pk = PushedKey(keyType: "ssh-rsa", priv: Array(pkcs1), aux: [], comment: comment, added: Date())
+    default:
+        dlog("ADD_IDENTITY: unsupported type \(ktype)"); return framed(Data([SSH_AGENT_FAILURE]))
+    }
+    guard let key = pk else { return framed(Data([SSH_AGENT_FAILURE])) }
+    guard pushedAdd(blob, key) else { dlog("ADD_IDENTITY: cap \(pushedMax) reached"); return framed(Data([SSH_AGENT_FAILURE])) }
+    if registryHasPubBlob(blob) { dlog("pushed key shadows a vault key — will sign WITHOUT Touch ID") }   // #16
+    dlog("pushed key added: \(ktype) \(key.comment)\(constrained ? " (constrained — constraints ignored)" : "")")
+    return framed(Data([SSH_AGENT_SUCCESS]))
+}
+
+func handleRemoveIdentity(_ body: Data) -> Data {
+    var r = Reader(data: body)
+    guard let blob = r.readString() else { return framed(Data([SSH_AGENT_FAILURE])) }
+    pushedQueue.sync { gPushed[blob]?.zero(); gPushed[blob] = nil }
+    return framed(Data([SSH_AGENT_SUCCESS]))
+}
+func handleRemoveAll() -> Data { pushedClear(); dlog("pushed keys cleared (REMOVE_ALL)"); return framed(Data([SSH_AGENT_SUCCESS])) }
 
 // MARK: - Key registry (~/.s3c-gorilla/keys.json)
 
@@ -52,60 +202,8 @@ func loadRegistry() -> [KeyEntry] {
 }
 
 // MARK: - SSH wire format helpers
-
-func wireString(_ d: Data) -> Data {
-    var out = Data()
-    var len = UInt32(d.count).bigEndian
-    out.append(Data(bytes: &len, count: 4))
-    out.append(d)
-    return out
-}
-
-func wireString(_ s: String) -> Data { wireString(Data(s.utf8)) }
-
-// mpint = SSH "bignum" — length-prefixed big-endian two's-complement.
-// Prepend 0x00 if high bit set (to keep the number positive).
-func wireMpint(_ raw: Data) -> Data {
-    var bytes = Array(raw)
-    // Strip leading zeros
-    while bytes.count > 1 && bytes[0] == 0 { bytes.removeFirst() }
-    // Add leading zero if high bit set
-    if let first = bytes.first, first & 0x80 != 0 { bytes.insert(0, at: 0) }
-    return wireString(Data(bytes))
-}
-
-struct Reader {
-    let data: Data
-    var pos: Int = 0
-
-    mutating func readByte() -> UInt8? {
-        guard pos < data.count else { return nil }
-        let b = data[pos]
-        pos += 1
-        return b
-    }
-
-    mutating func readUInt32() -> UInt32? {
-        guard pos + 4 <= data.count else { return nil }
-        let v = data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self) }
-        pos += 4
-        return UInt32(bigEndian: v)
-    }
-
-    mutating func readString() -> Data? {
-        guard let len = readUInt32(), pos + Int(len) <= data.count else { return nil }
-        let s = data.subdata(in: pos..<pos+Int(len))
-        pos += Int(len)
-        return s
-    }
-
-    mutating func readMpint() -> Data? {
-        guard var bytes = readString() else { return nil }
-        // Strip leading 0x00 that was added for sign
-        if bytes.count > 0 && bytes[0] == 0 { bytes.removeFirst() }
-        return bytes
-    }
-}
+// wireString / wireMpint / Reader / zeroOut / framed / parseECDSADer now live once in
+// ssh-wire.swift (#13), compiled alongside this file.
 
 // MARK: - Public key blob lookup (~/.s3c-gorilla/pubkeys/<name>.pub or from SE)
 
@@ -150,10 +248,17 @@ func handleRequestIdentities() -> Data {
     let entries = loadRegistry()
     var body = Data()
     var count: UInt32 = 0
+    var seen = Set<Data>()
     for e in entries {
         guard let blob = pubBlob(for: e) else { continue }
+        seen.insert(blob)
         body.append(wireString(blob))
         body.append(wireString("s3c-gorilla-\(e.name) (\(e.mode))"))
+        count += 1
+    }
+    for (blob, comment) in pushedList() where !seen.contains(blob) {   // KeePassXC-pushed, deduped (#20)
+        body.append(wireString(blob))
+        body.append(wireString("\(comment) (pushed by KeePassXC)"))
         count += 1
     }
     var out = Data()
@@ -172,6 +277,12 @@ func handleSignRequest(body: Data) -> Data {
           let signData = r.readString(),
           let flags = r.readUInt32() else {
         return framed(Data([SSH_AGENT_FAILURE]))
+    }
+    // KeePassXC-pushed keys sign WITHOUT Touch ID (you authed by unlocking the GUI). Checked
+    // before the registry so a pushed key shadows a chip-wrapped one of the same identity (P6).
+    if let pk = pushedGet(keyBlob) {
+        guard let sig = pushedSign(pk, signData, flags) else { return framed(Data([SSH_AGENT_FAILURE])) }
+        var out = Data(); out.append(SSH_AGENT_SIGN_RESPONSE); out.append(wireString(sig)); return framed(out)
     }
     // Find matching key in registry
     let entries = loadRegistry()
@@ -194,11 +305,89 @@ func handleSignRequest(body: Data) -> Data {
     return framed(out)
 }
 
+// MARK: - Password mode (no Secure Enclave): hold the master password + extracted
+// keys in memory for the session TTL, prompting (osascript) at most once per TTL.
+// Used on machines with no Touch ID; reuses the same type-specific signers below.
+
+var gPwCache: [UInt8]? = nil   // zeroable byte buffer, not a session-long String (H6)
+var gCacheStamp = Date.distantPast
+var gKeyCache: [String: Data] = [:]
+
+// Zero + drop the cached master-password bytes.
+func clearPwCache() {
+    if gPwCache != nil { for i in 0..<gPwCache!.count { gPwCache![i] = 0 }; gPwCache = nil }
+}
+
+func passwordTTL() -> Double {
+    if let v = ProcessInfo.processInfo.environment["GORILLA_UNLOCK_TTL"], let d = Double(v), d > 0 { return d }
+    let cfg = "\(homeDir)/.config/s3c-gorilla/config"
+    if let text = try? String(contentsOfFile: cfg, encoding: .utf8) {
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("GORILLA_UNLOCK_TTL=") {
+                let raw = t.dropFirst("GORILLA_UNLOCK_TTL=".count).replacingOccurrences(of: "\"", with: "")
+                if let d = Double(raw), d > 0 { return d }
+            }
+        }
+    }
+    return 7200
+}
+
+func expireCachesIfStale() {
+    if Date().timeIntervalSince(gCacheStamp) > passwordTTL() {
+        clearPwCache()
+        for k in gKeyCache.keys { var v = gKeyCache[k]!; zeroOut(&v) }
+        gKeyCache.removeAll()
+    }
+}
+
+// Connections are served concurrently (DispatchQueue.global per client), so the
+// pw/key caches MUST be accessed under a serial queue — concurrent Dictionary
+// mutation crashes. (B7)
+let pwCacheQueue = DispatchQueue(label: "s3c-gorilla.pwcache")
+
+func passwordModeKeyBytes(entry: KeyEntry) -> Data? {
+    return pwCacheQueue.sync {
+    expireCachesIfStale()
+    if let cached = gKeyCache[entry.name] { gCacheStamp = Date(); return cached }   // refresh TTL on hit (B6)
+    if gPwCache == nil {
+        guard let pwStr = askMasterPassword() else { return nil }
+        gPwCache = Array(pwStr.utf8); gCacheStamp = Date()   // cache as zeroable bytes (H6)
+    }
+    // Transient String only for the kdbx call; the cache stays a zeroable buffer.
+    guard let pwBytes = gPwCache,
+          let raw = extractSSHFromKdbx(masterPw: String(decoding: pwBytes, as: UTF8.self),
+                                       keyName: entry.name) else {
+        clearPwCache()   // wrong/absent pw → clear so the next sign re-prompts
+        return nil
+    }
+    var payload = raw
+    if entry.keyType == "ssh-rsa" {
+        guard let der = convertOpenSSHRSAToPKCS1(raw) else { return nil }
+        payload = der
+    }
+    gKeyCache[entry.name] = payload; gCacheStamp = Date()
+    return payload
+    }
+}
+
 // MARK: - Sign dispatch (mode + key type)
 
 func sign(entry: KeyEntry, data: Data, flags: UInt32) -> Data? {
     if entry.mode == "se-born" {
         return signSEBorn(name: entry.name, data: data)
+    }
+    if entry.mode == "password" {
+        // No Secure Enclave: extract the key from the kdbx with the master password
+        // (cached for the session), then sign with the same routines as chip-wrap.
+        guard var keyBytes = passwordModeKeyBytes(entry: entry) else { return nil }
+        defer { zeroOut(&keyBytes) }   // zeros our copy; the TTL cache is separate
+        switch entry.keyType {
+        case "ssh-ed25519":          return signEd25519(openSSHBlob: keyBytes, data: data)
+        case "ecdsa-sha2-nistp256":  return signECDSAP256(openSSHBlob: keyBytes, data: data)
+        case "ssh-rsa":              return signRSA(pkcs1DER: keyBytes, data: data, flags: flags)
+        default:                     return nil
+        }
     }
     // chip-wrap: unwrap bytes via touchid-gorilla (triggers Touch ID), parse, sign, zero.
     guard var keyBytes = unwrapViaTouchID(name: "ssh-\(entry.name)") else { return nil }
@@ -246,34 +435,7 @@ func signSEBorn(name: String, data: Data) -> Data? {
 }
 
 // Minimal ECDSA DER parser — SEQUENCE { INTEGER r, INTEGER s }
-func parseECDSADer(_ der: Data) -> (Data, Data)? {
-    var pos = 0
-    guard der.count > 2, der[pos] == 0x30 else { return nil }
-    pos += 1
-    // Length may be 1 byte or 0x81||byte
-    var seqLen: Int = 0
-    if der[pos] & 0x80 == 0 {
-        seqLen = Int(der[pos]); pos += 1
-    } else {
-        let n = Int(der[pos] & 0x7F); pos += 1
-        for _ in 0..<n { seqLen = (seqLen << 8) | Int(der[pos]); pos += 1 }
-    }
-    _ = seqLen
-    func readInt() -> Data? {
-        guard pos < der.count, der[pos] == 0x02 else { return nil }
-        pos += 1
-        var len = Int(der[pos]); pos += 1
-        if len & 0x80 != 0 {
-            let n = len & 0x7F; len = 0
-            for _ in 0..<n { len = (len << 8) | Int(der[pos]); pos += 1 }
-        }
-        let v = der.subdata(in: pos..<pos+len)
-        pos += len
-        return v
-    }
-    guard let r = readInt(), let s = readInt() else { return nil }
-    return (r, s)
-}
+// parseECDSADer → ssh-wire.swift (#13)
 
 // MARK: - Mode 1: Ed25519 signing
 
@@ -302,229 +464,7 @@ func signEd25519(openSSHBlob: Data, data: Data) -> Data? {
 // Then we hand the full PKCS#1 DER to SecKeyCreateWithData and let
 // Security.framework produce the actual signature.
 
-// --- Tiny BigInt (byte-array, big-endian, unsigned) ---------------------
-
-struct BigN: Comparable {
-    var bytes: [UInt8]   // big-endian, always at least one byte, no leading zeros except for zero itself
-
-    init(_ raw: [UInt8]) {
-        var b = raw
-        while b.count > 1 && b[0] == 0 { b.removeFirst() }
-        if b.isEmpty { b = [0] }
-        self.bytes = b
-    }
-    init(_ data: Data) { self.init(Array(data)) }
-    init(_ v: UInt8) { self.init([v]) }
-
-    static let zero = BigN([0])
-    static let one = BigN([1])
-    var isZero: Bool { bytes == [0] }
-    var bitCount: Int {
-        guard !isZero else { return 0 }
-        var b = 8 * bytes.count
-        var top = bytes[0]
-        while top & 0x80 == 0 { b -= 1; top <<= 1 }
-        return b
-    }
-    func bit(_ i: Int) -> UInt8 {
-        let byteIdx = bytes.count - 1 - (i / 8)
-        if byteIdx < 0 { return 0 }
-        return (bytes[byteIdx] >> UInt8(i % 8)) & 1
-    }
-
-    static func == (a: BigN, b: BigN) -> Bool { a.bytes == b.bytes }
-    static func < (a: BigN, b: BigN) -> Bool {
-        if a.bytes.count != b.bytes.count { return a.bytes.count < b.bytes.count }
-        for i in 0..<a.bytes.count {
-            if a.bytes[i] != b.bytes[i] { return a.bytes[i] < b.bytes[i] }
-        }
-        return false
-    }
-
-    static func + (a: BigN, b: BigN) -> BigN {
-        let la = a.bytes.count, lb = b.bytes.count
-        let n = max(la, lb)
-        var out = [UInt8](repeating: 0, count: n + 1)
-        var carry = 0
-        for i in 0..<n {
-            let ai = i < la ? Int(a.bytes[la - 1 - i]) : 0
-            let bi = i < lb ? Int(b.bytes[lb - 1 - i]) : 0
-            let s = ai + bi + carry
-            out[out.count - 1 - i] = UInt8(s & 0xFF)
-            carry = s >> 8
-        }
-        out[0] = UInt8(carry)
-        return BigN(out)
-    }
-
-    // Assumes a >= b.
-    static func - (a: BigN, b: BigN) -> BigN {
-        let la = a.bytes.count, lb = b.bytes.count
-        var out = [UInt8](repeating: 0, count: la)
-        var borrow = 0
-        for i in 0..<la {
-            let ai = Int(a.bytes[la - 1 - i])
-            let bi = i < lb ? Int(b.bytes[lb - 1 - i]) : 0
-            var d = ai - bi - borrow
-            if d < 0 { d += 256; borrow = 1 } else { borrow = 0 }
-            out[la - 1 - i] = UInt8(d)
-        }
-        return BigN(out)
-    }
-
-    static func * (a: BigN, b: BigN) -> BigN {
-        let la = a.bytes.count, lb = b.bytes.count
-        var scratch = [Int](repeating: 0, count: la + lb)
-        for i in 0..<la {
-            let ai = Int(a.bytes[la - 1 - i])
-            for j in 0..<lb {
-                let bj = Int(b.bytes[lb - 1 - j])
-                scratch[i + j] += ai * bj
-            }
-        }
-        // Propagate carries
-        for i in 0..<(scratch.count - 1) {
-            scratch[i + 1] += scratch[i] >> 8
-            scratch[i] &= 0xFF
-        }
-        var out = [UInt8](repeating: 0, count: scratch.count)
-        for i in 0..<scratch.count { out[out.count - 1 - i] = UInt8(scratch[i] & 0xFF) }
-        return BigN(out)
-    }
-
-    // Bitwise left shift by one.
-    func shl1() -> BigN {
-        var out = [UInt8](repeating: 0, count: bytes.count + 1)
-        var carry: UInt8 = 0
-        for i in (0..<bytes.count).reversed() {
-            let v = (UInt16(bytes[i]) << 1) | UInt16(carry)
-            out[i + 1] = UInt8(v & 0xFF)
-            carry = UInt8((v >> 8) & 1)
-        }
-        out[0] = carry
-        return BigN(out)
-    }
-
-    // a mod m, via binary long division (slow but simple).
-    func mod(_ m: BigN) -> BigN {
-        precondition(!m.isZero, "mod by zero")
-        var r = BigN.zero
-        for i in (0..<(8 * self.bytes.count)).reversed() {
-            r = r.shl1()
-            if self.bit(i) == 1 {
-                r = r + BigN.one
-            }
-            if r >= m {
-                r = r - m
-            }
-        }
-        return r
-    }
-}
-
-// Modular exponentiation: base^exp mod m. Square-and-multiply, MSB first.
-func modPow(_ base: BigN, _ exp: BigN, _ m: BigN) -> BigN {
-    if m == BigN.one { return BigN.zero }
-    var result = BigN.one
-    let b = base.mod(m)
-    let bits = exp.bitCount
-    if bits == 0 { return BigN.one }
-    for i in (0..<bits).reversed() {
-        result = (result * result).mod(m)
-        if exp.bit(i) == 1 {
-            result = (result * b).mod(m)
-        }
-    }
-    return result
-}
-
-// --- DER encoders ------------------------------------------------------
-
-func derLength(_ n: Int) -> Data {
-    if n < 0x80 { return Data([UInt8(n)]) }
-    var v = n, raw = [UInt8]()
-    while v > 0 { raw.insert(UInt8(v & 0xFF), at: 0); v >>= 8 }
-    var out = Data([0x80 | UInt8(raw.count)])
-    out.append(Data(raw))
-    return out
-}
-
-func derInt(_ bytes: Data) -> Data {
-    // Strip leading zeros, then prepend 0x00 if high bit is set.
-    var b = Array(bytes)
-    while b.count > 1 && b[0] == 0 { b.removeFirst() }
-    if b.isEmpty { b = [0] }
-    if b[0] & 0x80 != 0 { b.insert(0, at: 0) }
-    var out = Data([0x02])
-    out.append(derLength(b.count))
-    out.append(Data(b))
-    return out
-}
-
-func derSequence(_ content: Data) -> Data {
-    var out = Data([0x30])
-    out.append(derLength(content.count))
-    out.append(content)
-    return out
-}
-
-// --- RSA OpenSSH-to-PKCS#1 bridge + sign -------------------------------
-
-// Convert raw OpenSSH RSA private bytes into PKCS#1 DER suitable for SecKey.
-// Heavy work lives here: one modular exponentiation (q^(p-2) mod p) — we pay
-// it once at bootstrap time and cache the result inside the wrap blob.
-func convertOpenSSHRSAToPKCS1(_ openSSHBlob: Data) -> Data? {
-    guard let c = parseOpenSSHPrivate(openSSHBlob, expectedType: "ssh-rsa"),
-          let nData = c["n"], let eData = c["e"], let dData = c["d"],
-          let pData = c["p"], let qData = c["q"] else { return nil }
-    let p = BigN(pData), q = BigN(qData), d = BigN(dData)
-    let dp = d.mod(p - BigN.one)
-    let dq = d.mod(q - BigN.one)
-    let qinv = modPow(q, p - BigN([0x02]), p)        // Fermat: q^(p-2) mod p
-    return derSequence(
-        derInt(Data([0x00])) +   // version
-        derInt(nData) +
-        derInt(eData) +
-        derInt(dData) +
-        derInt(pData) +
-        derInt(qData) +
-        derInt(Data(dp.bytes)) +
-        derInt(Data(dq.bytes)) +
-        derInt(Data(qinv.bytes))
-    )
-}
-
-func signRSA(pkcs1DER: Data, data: Data, flags: UInt32) -> Data? {
-    let attrs: [String: Any] = [
-        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-        kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
-    ]
-    var error: Unmanaged<CFError>?
-    guard let key = SecKeyCreateWithData(pkcs1DER as CFData, attrs as CFDictionary, &error) else {
-        return nil
-    }
-
-    let algorithm: SecKeyAlgorithm
-    let sigType: String
-    if flags & SSH_AGENT_RSA_SHA2_512 != 0 {
-        algorithm = .rsaSignatureMessagePKCS1v15SHA512
-        sigType = "rsa-sha2-512"
-    } else if flags & SSH_AGENT_RSA_SHA2_256 != 0 {
-        algorithm = .rsaSignatureMessagePKCS1v15SHA256
-        sigType = "rsa-sha2-256"
-    } else {
-        algorithm = .rsaSignatureMessagePKCS1v15SHA1
-        sigType = "ssh-rsa"
-    }
-
-    guard let sig = SecKeyCreateSignature(key, algorithm, data as CFData, &error) as Data? else {
-        return nil
-    }
-    var out = Data()
-    out.append(wireString(sigType))
-    out.append(wireString(sig))
-    return out
-}
+// BigN / DER / RSA OpenSSH→PKCS#1 bridge + signRSA moved to shared ssh-rsa.swift (#RSA).
 
 // MARK: - Mode 1: ECDSA P-256 signing
 
@@ -628,10 +568,27 @@ func parseOpenSSHPrivate(_ blob: Data, expectedType: String) -> [String: Data]? 
 
 // MARK: - Touch-ID unwrap via touchid-gorilla subprocess
 
+// Epoch of the last boot (kern.boottime) so a blob from before a reboot is treated as absent
+// — SSH secrets in /tmp must not survive a reboot either (CP3, mirrors env/otp _blob_fresh).
+func bootEpoch() -> TimeInterval {
+    var tv = timeval(); var size = MemoryLayout<timeval>.stride
+    var mib = [CTL_KERN, KERN_BOOTTIME]
+    if sysctl(&mib, 2, &tv, &size, nil, 0) == 0 { return TimeInterval(tv.tv_sec) }
+    return 0
+}
+func blobIsStale(_ path: String) -> Bool {
+    guard let m = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date else { return false }
+    let mt = m.timeIntervalSince1970
+    if mt > Date().timeIntervalSince1970 + 300 { return true }   // future mtime = bad clock → don't trust it (#17)
+    let boot = bootEpoch()
+    return boot > 0 && mt < boot
+}
+
 func unwrapViaTouchID(name: String) -> Data? {
-    // If /tmp/s3c-gorilla/<name>.blob doesn't exist, trigger bootstrap.
+    // Bootstrap if the blob is missing OR predates the last boot (stale → re-wrap fresh).
     let blobPath = "\(blobDir)/\(name).blob"
-    if !FileManager.default.fileExists(atPath: blobPath) {
+    if !FileManager.default.fileExists(atPath: blobPath) || blobIsStale(blobPath) {
+        if blobIsStale(blobPath) { try? FileManager.default.removeItem(atPath: blobPath) }
         guard bootstrapBlob(name: name) else { return nil }
     }
     let proc = Process()
@@ -722,7 +679,7 @@ func extractSSHFromKdbx(masterPw: String, keyName: String) -> Data? {
         }
     }
     let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/local/bin/keepassxc-cli")
+    proc.executableURL = URL(fileURLWithPath: keepassxcPath())
     proc.arguments = ["attachment-export", dbPath, "SSH/\(keyName)", keyName, "--stdout", "-q"]
     let inPipe = Pipe()
     let outPipe = Pipe()
@@ -734,18 +691,16 @@ func extractSSHFromKdbx(masterPw: String, keyName: String) -> Data? {
     try? inPipe.fileHandleForWriting.close()
     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
     proc.waitUntilExit()
-    return proc.terminationStatus == 0 && !data.isEmpty ? data : nil
+    if proc.terminationStatus != 0 || data.isEmpty {
+        dlog("extractSSHFromKdbx failed for SSH/\(keyName): keepassxc-cli exit \(proc.terminationStatus)")
+        return nil
+    }
+    return data
 }
 
 // MARK: - Wire framing + dispatch
 
-func framed(_ payload: Data) -> Data {
-    var out = Data()
-    var len = UInt32(payload.count).bigEndian
-    out.append(Data(bytes: &len, count: 4))
-    out.append(payload)
-    return out
-}
+// framed → ssh-wire.swift (#13)
 
 func handleMessage(_ msg: Data) -> Data {
     guard let type = msg.first else { return framed(Data([SSH_AGENT_FAILURE])) }
@@ -755,7 +710,16 @@ func handleMessage(_ msg: Data) -> Data {
         return handleRequestIdentities()
     case SSH_AGENTC_SIGN_REQUEST:
         return handleSignRequest(body: body)
+    case SSH_AGENTC_ADD_IDENTITY:
+        return handleAddIdentity(body)
+    case SSH_AGENTC_ADD_ID_CONSTRAINED:
+        return handleAddIdentity(body, constrained: true)
+    case SSH_AGENTC_REMOVE_IDENTITY:
+        return handleRemoveIdentity(body)
+    case SSH_AGENTC_REMOVE_ALL_IDENTITIES:
+        return handleRemoveAll()
     default:
+        dlog("unhandled ssh-agent message type \(type) (\(msg.count)b)")   // #4 diagnostics
         return framed(Data([SSH_AGENT_FAILURE]))
     }
 }
@@ -788,6 +752,7 @@ func serve() {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, addrLen) }
     }
     guard bindResult == 0 else {
+        dlog("bind() failed on \(socketPath): \(String(cString: strerror(errno)))")
         fputs("bind() failed: \(String(cString: strerror(errno)))\n", stderr); exit(1)
     }
     chmod(socketPath, 0o600)
@@ -795,6 +760,15 @@ func serve() {
         fputs("listen() failed: \(String(cString: strerror(errno)))\n", stderr); exit(1)
     }
     fputs("s3c-ssh-agent listening on \(socketPath)\n", stderr)
+
+    // Idle backstop for KeePassXC-pushed keys (#2): drop them after the unlock TTL even if
+    // REMOVE_ALL never arrives (e.g. KeePassXC crashed). KeePassXC re-pushes on each unlock, so
+    // this caps how long a pushed key stays signable. (Screen lock is covered by KeePassXC's own
+    // REMOVE_ALL on database lock + this TTL.)
+    DispatchQueue.global().async {
+        let ttl = passwordTTL()
+        while true { sleep(60); pushedExpire(ttl) }
+    }
 
     while true {
         let cfd = accept(fd, nil, nil)
@@ -808,6 +782,10 @@ func serve() {
 }
 
 func handleConnection(_ cfd: Int32) {
+    // Reject any peer that isn't the same uid (#3) — socket 0600 already limits this, but make
+    // it explicit so a different-uid process can't push keys or sign.
+    var euid = uid_t(); var egid = gid_t()
+    if getpeereid(cfd, &euid, &egid) != 0 || euid != geteuid() { dlog("ssh peer reject (uid mismatch)"); return }
     while true {
         // Read 4-byte length
         var lenBuf = [UInt8](repeating: 0, count: 4)
@@ -832,6 +810,7 @@ func handleConnection(_ cfd: Int32) {
 // MARK: - Cleanup / signals
 
 func cleanup() {
+    pushedClear()   // zero KeePassXC-pushed keys on exit (P6)
     // Wipe /tmp/s3c-gorilla/ on session end
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: touchidPath)
@@ -841,30 +820,31 @@ func cleanup() {
     try? FileManager.default.removeItem(atPath: socketPath)
 }
 
-// Install SIGTERM / SIGINT handlers
-let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-termSource.setEventHandler { cleanup(); exit(0) }
-termSource.resume()
-signal(SIGTERM, SIG_IGN)
-let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-intSource.setEventHandler { cleanup(); exit(0) }
-intSource.resume()
-signal(SIGINT, SIG_IGN)
-
-// MARK: - Util
-
-func zeroOut(_ d: inout Data) {
-    let count = d.count
-    d.withUnsafeMutableBytes { ptr in
-        if let base = ptr.baseAddress {
-            memset(base, 0, count)
-        }
-    }
-    d.removeAll(keepingCapacity: false)
-}
+// zeroOut → ssh-wire.swift (#13)
 
 // MARK: - Main
-// serve() is a tight accept-loop — must run off the main queue so dispatchMain()
-// can process the DispatchSource signal handlers registered above.
-DispatchQueue.global(qos: .userInitiated).async { serve() }
-dispatchMain()
+// @main (not top-level code) so this file can compile together with ssh-wire.swift —
+// multi-file builds forbid top-level statements (#13).
+@main
+struct SSHAgentMain {
+static func main() {
+    // SIGTERM / SIGINT → wipe + exit.
+    let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    termSource.setEventHandler { cleanup(); exit(0) }
+    termSource.resume()
+    signal(SIGTERM, SIG_IGN)
+    let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    intSource.setEventHandler { cleanup(); exit(0) }
+    intSource.resume()
+    signal(SIGINT, SIG_IGN)
+
+    // No core dumps — never leak secrets on crash. (B4)
+    var coreLimit = rlimit(rlim_cur: 0, rlim_max: 0)
+    setrlimit(RLIMIT_CORE, &coreLimit)
+
+    // serve() is a tight accept-loop — must run off the main queue so dispatchMain()
+    // can process the DispatchSource signal handlers registered above.
+    DispatchQueue.global(qos: .userInitiated).async { serve() }
+    dispatchMain()
+}
+}

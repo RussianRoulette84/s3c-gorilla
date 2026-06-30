@@ -122,5 +122,14 @@ Claude Agent loaded 🔫!
 
 ## Lessons Learned
 
+- **Private-key permissions / `ssh-keygen`:** `ssh-keygen -y` (and ssh itself)
+  REFUSE a private key whose source is group/other-readable — e.g. piping a key
+  through `/dev/stdin` fails with *"Permissions 0660 for '/dev/stdin' are too
+  open … bad permissions … key will be ignored."* When validating or loading a
+  vault-extracted key, stage it in a `mktemp` file `chmod 600` FIRST, never a
+  pipe. Same rule for `~/.ssh/id_*` — a key the agent can read but ssh rejects on
+  perms looks identical to "no key" and silently falls through to
+  `Permission denied (publickey)`.
+
 
 

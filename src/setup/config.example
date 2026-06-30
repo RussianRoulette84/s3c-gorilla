@@ -22,3 +22,29 @@ GORILLA_OTP_GROUP="2FA"
 #               it, chip-wraps into /tmp, Touch ID per sign.
 #   se-born   : chip-generated key, never leaves the chip, per-sign Touch ID.
 #GORILLA_SSH_MODE="chip-wrap"
+
+# Session-unlock — hold the master password in a memory-only, per-terminal agent
+# (s3c-session-agent) so env/otp/ssh stop re-prompting within the same terminal
+# tab. Set by the installer. true = on, false = off.
+# SECURITY: this is a deliberate "grace period". While unlocked, the agent holds your
+# master password (and caches extracted secrets + ssh keys) for the whole TTL — so the
+# blast radius of a privileged same-uid peer (debugger / task_for_pid) is the WHOLE vault,
+# not one secret. The control socket only answers our own binaries (HR #3) and the pw is
+# mlock'd + never on disk, but that is hardening, not a boundary against root. On Touch ID
+# machines this BYPASSES the per-decrypt fingerprint gate, so it defaults OFF there (opt-in).
+# There is intentionally NO fake "re-auth per ssh sign" knob — a headless agent can't prompt;
+# the real lever is the TTL below. For sensitive setups, lower it (e.g. 900 = 15 min) and
+# `s3c-gorilla wipe` when you step away.
+#GORILLA_SESSION_UNLOCK="false"
+
+# Seconds the session-unlock agent holds the password before it self-expires
+# (activity resets the timer). Default 2 hours; lower it for a smaller exposure window.
+#GORILLA_UNLOCK_TTL="7200"
+
+# Colon-separated roots for `s3c-gorilla scan` (in addition to the built-in
+# ~/Projects ~/Code ~/Workspaces ~/src). Add wherever you keep code.
+#GORILLA_SCAN_ROOTS="$HOME/Projects:$HOME/Code:$HOME/work"
+
+# Paranoid mode: never cache a /tmp blob or fan out — extract the ONE requested secret,
+# use it, discard. Master pw every run, nothing reusable left behind. Per-call: --paranoid.
+#GORILLA_PARANOID="false"

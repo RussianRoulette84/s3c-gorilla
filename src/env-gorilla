@@ -25,6 +25,13 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 : "${GORILLA_TOUCHID:=/usr/local/bin/touchid-gorilla}"
 : "${GORILLA_BANNERS:=/usr/local/share/s3c-gorilla/banners.sh}"
 [[ -r "$GORILLA_BANNERS" ]] && source "$GORILLA_BANNERS"
+# Fallback when banners.sh is absent: session-unlock degrades to a plain prompt.
+command -v get_master_pw >/dev/null || get_master_pw() { ask_master_pw; }
+
+# --paranoid (CP3): extract the one requested secret, use it, and NEVER cache a /tmp blob or
+# fan out. Master pw every run; nothing reusable left behind. Off by default.
+: "${GORILLA_PARANOID:=false}"
+PARANOID=false; [[ "$GORILLA_PARANOID" == "true" ]] && PARANOID=true
 
 # ----------------------------------------------------------
 # Helpers
@@ -53,6 +60,10 @@ iter_project_list() {
 
 ask_master_pw() {
     command -v show_master_banner &>/dev/null && show_master_banner
+    local _t="${GORILLA_TOUCHID:-/usr/local/bin/touchid-gorilla}" spw
+    if [[ -x "$_t" ]] && spw=$("$_t" master-prompt "master password" 2>/dev/tty) && [[ -n "$spw" ]]; then
+        printf '%s' "$spw"; return   # secure keyboard entry (H4)
+    fi
     local pw
     printf '🔐 KeePass master password: ' >&2
     read -rs pw
@@ -78,49 +89,61 @@ unwrap_blob() {
 # Fetch + merge .envs for every project in the comma list under a single
 # master-password prompt, wrap the merged result into a chip-blob keyed
 # by the normalized name, then echo the merged stream.
+# Fetch + merge .envs for every project in the comma list. Prefer the
+# session-agent path; whenever it returns nothing for a project, fall back
+# to direct kdbx extraction (master pw prompted lazily, once). Then chip-wrap
+# the merged blob and echo the merged stream.
 bootstrap_and_get() {
     local project_list="$1"
     local key="$2"
-    local pw merged env_data proj missing=()
+    local pw="" merged="" env_data proj missing=()
+    local use_session=false
 
-    pw=$(ask_master_pw)
-    [[ -z "$pw" ]] && { echo "env-gorilla: no password entered" >&2; return 1; }
+    if [[ "$GORILLA_SESSION_UNLOCK" == "true" ]] && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
+        use_session=true
+    fi
 
-    merged=""
-    while IFS= read -r proj; do
-        env_data=$(kdbx_extract_env "$pw" "$proj")
+    # Read the project list on FD 3 so stdin (FD 0) stays the terminal —
+    # otherwise get_master_pw's `read` pulls from this pipe and gets EOF
+    # ("no password entered").
+    while IFS= read -r proj <&3; do
+        env_data=""
+
+        if $use_session; then
+            env_data=$(session_extract env "$GORILLA_ENV_GROUP/$proj" 2>/dev/null)
+        fi
+
         if [[ -z "$env_data" ]]; then
-            missing+=("$proj")
-            continue
+            if [[ -z "$pw" ]]; then
+                pw=$(get_master_pw)
+                [[ -z "$pw" ]] && { echo "env-gorilla: no password entered" >&2; return 1; }
+            fi
+            env_data=$(kdbx_extract_env "$pw" "$proj")
         fi
-        if [[ -n "$merged" ]]; then
-            merged+=$'\n'
-        fi
-        merged+="$env_data"
-    done < <(iter_project_list "$project_list")
 
-    # Warn about any missing kdbx entries but continue if at least one
-    # project loaded — saves the user from a typo nuking the whole launch.
+        if [[ -z "$env_data" ]]; then missing+=("$proj"); continue; fi
+        [[ -n "$merged" ]] && merged+=$'\n'
+        merged+="$env_data"
+    done 3< <(iter_project_list "$project_list")
+
     if (( ${#missing[@]} > 0 )); then
         echo "env-gorilla: warning — couldn't extract $GORILLA_ENV_GROUP/{$(IFS=,; echo "${missing[*]}")}/.env (skipped)" >&2
     fi
-
     if [[ -z "$merged" ]]; then
         echo "env-gorilla: no .env data extracted from any listed project" >&2
         unset pw
         return 1
     fi
 
-    # Cache into a chip-wrapped blob only when an SE is present. In password
-    # mode we skip the wrap and just hand back the merged env — the master pw
-    # prompt above is the only gate, re-asked on each run (no secure cache).
-    if have_chip; then
+    if have_chip && ! $PARANOID; then
         if ! printf '%s' "$merged" | "$GORILLA_TOUCHID" wrap "env-$key" &>/dev/null; then
             echo "env-gorilla: failed to chip-wrap env blob" >&2
             unset pw merged
             return 1
         fi
+        [[ -n "${pw:-}" ]] && command -v fan_out_all >/dev/null 2>&1 && fan_out_all "$pw" &
     fi
+
     unset pw
     printf '%s' "$merged"
     unset merged
@@ -134,8 +157,8 @@ get_env() {
         echo "env-gorilla: empty project list" >&2
         return 1
     fi
-    # Password-only mode: no chip to unwrap/cache with — extract fresh each run.
-    if ! have_chip; then
+    # Password-only mode OR --paranoid: no cached blob — extract fresh each run.
+    if ! have_chip || $PARANOID; then
         bootstrap_and_get "$project_list" "$key"
         return
     fi
@@ -143,7 +166,9 @@ get_env() {
     local blob_path="/tmp/s3c-gorilla/env-$key.blob"
     local env_data
 
-    if [[ -f "$blob_path" ]]; then
+    # Trust a cached blob only if it postdates the last boot (P2 reboot-safety): a stale
+    # blob from before a reboot is treated as absent and we re-fan-out.
+    if [[ -f "$blob_path" ]] && { ! command -v _blob_fresh >/dev/null 2>&1 || _blob_fresh "$blob_path"; }; then
         env_data=$(unwrap_blob "$key")
         if [[ -n "$env_data" ]]; then
             printf '%s' "$env_data"
@@ -158,9 +183,15 @@ get_env() {
 # Dispatch
 # ----------------------------------------------------------
 
+# Pull --paranoid out of the args (it can appear anywhere) before normal dispatch.
+_args=(); for _a in "$@"; do [[ "$_a" == "--paranoid" ]] && { PARANOID=true; continue; }; _args+=("$_a"); done
+set -- "${_args[@]}"
+# Paranoid: clear any blob a prior normal run left behind (env/otp/ssh) before we extract (#7/#10).
+$PARANOID && command -v _paranoid_wipe >/dev/null 2>&1 && _paranoid_wipe
+
 if [[ "$1" == "--list" ]]; then
     echo "Available projects:"
-    pw=$(ask_master_pw)
+    pw=$(get_master_pw)
     echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_ENV_GROUP/" -q 2>/dev/null | grep -v '/$'
     unset pw
     exit 0
@@ -169,7 +200,14 @@ fi
 if [[ "$1" == "--clear" ]]; then
     if [[ -n "$2" ]]; then
         clear_key=$(normalize_project_list "$2")
-        "$GORILLA_TOUCHID" wrap-clear "env-$clear_key"
+        if have_chip; then
+            "$GORILLA_TOUCHID" wrap-clear "env-$clear_key"
+        else
+            # Password mode has no chip-wrapped blobs — just drop any /tmp file.
+            bp="/tmp/s3c-gorilla/env-$clear_key.blob"
+            [[ -e "$bp" ]] && { trash "$bp" 2>/dev/null || mv "$bp" "$bp.removed" 2>/dev/null; }
+            unset bp
+        fi
         echo "Cleared env-$clear_key.blob"
         unset clear_key
     else

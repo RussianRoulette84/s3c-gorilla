@@ -54,6 +54,23 @@ setup() {
     done
 }
 
+@test "00-common.sh defines the vars + helpers every step depends on (#19)" {
+    # Steps are sourced in order after 00-common; if a shared definition is removed, steps would
+    # use-before-define and break silently. Pin the contract: sourcing common must define these.
+    COMMON="$SETUP_DIR/00-common.sh"
+    [[ -f "$COMMON" ]] || skip "00-common.sh missing"
+    run env SCRIPT_DIR="$(cd "$SETUP_DIR/../.." && pwd)" bash -c '
+        source "'"$COMMON"'" 2>/dev/null
+        for v in SRC_DIR BIN_DIR SHARE_DIR CONFIG_FILE BUILD_DIR DB_PATH; do
+            [[ -n "${!v+x}" ]] || { echo "missing var: $v"; exit 1; }
+        done
+        for fn in section item skip info success warn error; do
+            [[ "$(type -t "$fn")" == function ]] || { echo "missing fn: $fn"; exit 1; }
+        done
+    '
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "no step file exceeds 250 lines (CLAUDE.md rule)" {
     if [ "${#STEP_FILES[@]}" -eq 0 ]; then
         skip "no step files yet"

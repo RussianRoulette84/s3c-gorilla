@@ -20,6 +20,16 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 : "${GORILLA_BANNERS:=/usr/local/share/s3c-gorilla/banners.sh}"
 : "${GORILLA_NOTIFIER:=terminal-notifier}"
 [[ -r "$GORILLA_BANNERS" ]] && source "$GORILLA_BANNERS"
+# Fallback when banners.sh is absent: session-unlock degrades to a plain prompt.
+command -v get_master_pw >/dev/null || get_master_pw() { ask_master_pw; }
+
+# --paranoid (CP3): never wrap /tmp blobs — compute the code via KeePassXC per call (same as
+# password mode), even on a Touch ID machine. Off by default. Pull it out of the args.
+: "${GORILLA_PARANOID:=false}"
+PARANOID=false; [[ "$GORILLA_PARANOID" == "true" ]] && PARANOID=true
+_args=(); for _a in "$@"; do [[ "$_a" == "--paranoid" ]] && { PARANOID=true; continue; }; _args+=("$_a"); done
+set -- "${_args[@]}"
+$PARANOID && command -v _paranoid_wipe >/dev/null 2>&1 && _paranoid_wipe   # clear cached blobs (#7/#10)
 
 # ----------------------------------------------------------
 # Helpers
@@ -27,6 +37,10 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 
 ask_master_pw() {
     command -v show_master_banner &>/dev/null && show_master_banner
+    local _t="${GORILLA_TOUCHID:-/usr/local/bin/touchid-gorilla}" spw
+    if [[ -x "$_t" ]] && spw=$("$_t" master-prompt "master password" 2>/dev/tty) && [[ -n "$spw" ]]; then
+        printf '%s' "$spw"; return   # secure keyboard entry (H4)
+    fi
     local pw
     printf '🔐 KeePass master password: ' >&2
     read -rs pw
@@ -42,20 +56,33 @@ have_chip() { [[ -x "$GORILLA_TOUCHID" ]]; }
 # computes each entry's live TOTP via `show -t`. Mirrors the chip dispatch:
 # no arg = list all codes, an arg = fuzzy-match one (copy + notify).
 run_password_mode() {
-    local arg="$1" pw services svc code matches=() q_lower s_lower
-    pw=$(ask_master_pw)
-    [[ -z "$pw" ]] && { echo "otp-gorilla: no password entered" >&2; return 1; }
-    services=$(echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_OTP_GROUP/" -q 2>/dev/null | grep -v '/$')
+    local arg="$1" pw="" services svc code matches=() q_lower s_lower use_agent=false
+    # Prefer the session agent: it lists + computes TOTP itself, so the master pw
+    # never enters this shell (B1). Fall back to the direct pw path otherwise.
+    if [[ "$GORILLA_SESSION_UNLOCK" == "true" ]] && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
+        use_agent=true
+        services=$(session_list "$GORILLA_OTP_GROUP" 2>/dev/null | grep -v '/$')
+    else
+        pw=$(get_master_pw)
+        [[ -z "$pw" ]] && { echo "otp-gorilla: no password entered" >&2; return 1; }
+        services=$(echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_OTP_GROUP/" -q 2>/dev/null | grep -v '/$')
+    fi
     if [[ -z "$services" ]]; then
         echo "otp-gorilla: no entries in $GORILLA_OTP_GROUP/" >&2; unset pw; return 1
     fi
+
+    # Live TOTP for one service — via the agent (pw stays inside) or direct.
+    _otp_code() {
+        if $use_agent; then session_extract otp "$GORILLA_OTP_GROUP/$1" 2>/dev/null
+        else echo "$pw" | keepassxc-cli show -t "$GORILLA_DB" "$GORILLA_OTP_GROUP/$1" -q 2>/dev/null; fi
+    }
 
     if [[ -z "$arg" ]]; then
         echo "All OTP codes:"
         echo "────────────────────────────────"
         while IFS= read -r svc; do
             [[ -z "$svc" ]] && continue
-            code=$(echo "$pw" | keepassxc-cli show -t "$GORILLA_DB" "$GORILLA_OTP_GROUP/$svc" -q 2>/dev/null)
+            code=$(_otp_code "$svc")
             printf "  %-24s  %s\n" "$svc" "${code:-—}"
         done <<< "$services"
         echo "────────────────────────────────"
@@ -76,7 +103,7 @@ run_password_mode() {
         printf '  %s\n' "${matches[@]}" >&2; unset pw; return 1
     fi
     svc="${matches[0]}"
-    code=$(echo "$pw" | keepassxc-cli show -t "$GORILLA_DB" "$GORILLA_OTP_GROUP/$svc" -q 2>/dev/null)
+    code=$(_otp_code "$svc")
     unset pw
     if [[ -z "$code" ]]; then
         echo "otp-gorilla: no TOTP configured for $svc" >&2; return 1
@@ -105,7 +132,7 @@ kdbx_extract_totp_value() {
 
 bootstrap_all() {
     local pw
-    pw=$(ask_master_pw)
+    pw=$(get_master_pw)
     [[ -z "$pw" ]] && return 1
     local services
     services=$(echo "$pw" | keepassxc-cli ls "$GORILLA_DB" "$GORILLA_OTP_GROUP/" -q 2>/dev/null | grep -v '/$')
@@ -121,6 +148,9 @@ bootstrap_all() {
         [[ -z "$val" ]] && continue
         printf '%s' "$val" | "$GORILLA_TOUCHID" wrap "otp-$svc" &>/dev/null && count=$((count+1))
     done <<< "$services"
+    # Our otp blobs are written — fan out env + ssh in the BACKGROUND (skips fresh otp blobs),
+    # so they need no second master-pw prompt this session and we don't block here (#3/#4).
+    command -v fan_out_all >/dev/null 2>&1 && fan_out_all "$pw" &
     unset pw val
     echo "otp-gorilla: wrapped $count service(s) for this boot" >&2
     [[ $count -gt 0 ]]
@@ -198,14 +228,15 @@ fi
 
 # No Secure Enclave → password mode (KeePassXC computes the TOTP). Handles both
 # the no-arg list and the fuzzy-match-one cases, then exits.
-if ! have_chip; then
+if ! have_chip || $PARANOID; then
     run_password_mode "$1"
     exit $?
 fi
 
 # No args: lazy-wrap-all + show all codes
 if [[ -z "$1" ]]; then
-    if [[ -z "$(list_wrapped)" ]]; then
+    # Re-bootstrap when there are no wrapped blobs OR the session is stale (pre-boot, P2).
+    if [[ -z "$(list_wrapped)" ]] || { command -v _blob_fresh >/dev/null 2>&1 && ! _blob_fresh "$GORILLA_SENTINEL"; }; then
         bootstrap_all || exit 1
     fi
     echo "All OTP codes:"

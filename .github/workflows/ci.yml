@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Shell syntax
+        run: |
+          for f in src/s3c-gorilla src/ssh-gorilla.sh src/env-gorilla src/otp-gorilla \
+                   src/lib/*.sh install.sh scripts/*.sh; do
+            echo "bash -n $f"; bash -n "$f"
+          done
+      - name: bats (portable suites — no keepassxc / trash / swift)
+        run: bats src/tests/shell/test_s3c_scan.bats src/tests/shell/test_s3c_gorilla.bats src/tests/shell/test_s3c_keychain.bats src/tests/shell/test_fanout_wiring.bats src/tests/shell/test_paranoid.bats
+
+  macos-swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile-check every Swift binary
+        run: ./scripts/build-swift.sh
+      - name: Install bats
+        run: brew install bats-core
+      - name: bats (full suite incl. real agent round-trip)
+        run: bats src/tests/shell/

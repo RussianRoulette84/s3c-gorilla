@@ -2,6 +2,7 @@ import Foundation
 import LocalAuthentication
 import Security
 import CryptoKit
+import Carbon   // EnableSecureEventInput (H4)
 
 // ECIES algorithm used for every encrypt/decrypt in this binary.
 let algo: SecKeyAlgorithm = .eciesEncryptionCofactorX963SHA256AESGCM
@@ -288,6 +289,20 @@ case "unwrap":
     guard args.count >= 3 else { fputs(usage + "\n", stderr); exit(1) }
     guard let data = unwrap(name: args[2]) else { exit(1) }
     FileHandle.standardOutput.write(data)
+
+case "master-prompt":
+    // Read the master password with SECURE keyboard entry (H4) — EnableSecureEventInput blocks
+    // other apps from sniffing the keystrokes. Prompt → /dev/tty; password → stdout (the caller
+    // captures it via $(...)). Falls back gracefully (the bash caller handles a non-zero exit).
+    let label = args.count >= 3 ? args[2] : "master password"
+    EnableSecureEventInput()
+    defer { DisableSecureEventInput() }
+    if !IsSecureEventInputEnabled() {
+        fputs("warning: secure keyboard entry could not be engaged — typing is NOT shielded\n", stderr)   // #8 no false sense of safety
+    }
+    guard let c = getpass("🔐 KeePass \(label): ") else { exit(1) }
+    print(String(cString: c))
+    var i = 0; while c[i] != 0 { c[i] = 0; i += 1 }   // zero getpass's static buffer (#15)
 
 case "wrap-list":
     wrapList()
