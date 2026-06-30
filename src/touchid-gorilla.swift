@@ -20,11 +20,24 @@ func blobPath(for name: String) -> String { "\(blobDir)/\(name).blob" }
 
 // MARK: - SE key helpers (parameterized by tag)
 
+// Touch ID hardware present? Decides the SE key's auth gate: biometry on Macs
+// with a sensor (MacBooks), device passcode on those without (Mac mini / Pro).
+// Either way the key stays Secure-Enclave-bound and demands fresh per-use auth.
+func hasBiometry() -> Bool {
+    var err: NSError?
+    return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+}
+
 func createSEKey(tag: Data) -> SecKey? {
+    // .biometryCurrentSet would fail to create on a Mac with no Touch ID, so
+    // fall back to .devicePasscode there (still gated, still SE-bound).
+    let acFlags: SecAccessControlCreateFlags = hasBiometry()
+        ? [.privateKeyUsage, .biometryCurrentSet]
+        : [.privateKeyUsage, .devicePasscode]
     guard let acl = SecAccessControlCreateWithFlags(
         kCFAllocatorDefault,
         kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        [.privateKeyUsage, .biometryCurrentSet],
+        acFlags,
         nil
     ) else { return nil }
 
