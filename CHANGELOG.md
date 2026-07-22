@@ -1,3 +1,17 @@
+# v0.17 (2026-07-22)
+
+Macs without Touch ID get the unlock window too.
+
+## SSH
+- [NEW] **Unlock window on Macs without Touch ID.** Was a plain text prompt with no choice. Now: just once, until lock, or a timer.
+- [CHANGE] Your pick sets how long the helper keeps the password. "Just once" lets go ~30s after the work stops — `ssh` needs a live connection, so it can't be zero. Tune with `GORILLA_UNLOCK_ONCE_TTL`.
+- [CHANGE] Falls back to the text prompt when the window isn't installed, you're on the Mac remotely, or `GORILLA_UNLOCK_WINDOW=""`.
+
+### Dev logs
+- [CHANGE] `ScopeTimerSwitch` is table-driven now (`ScopeSeg`), so `--password-mode` drops the `app`/`askpw` states cleanly.
+- [CHANGE] `s3c-session-agent start <tty> <ppid> [ttlSec]`; `session_unlock` maps the window's `scope=`/`ttl=` to seconds (`0` = config default).
+- [CHANGE] Split for the 400-line cap: `s3c-ssh-agent.swift` 1301 → 6 files, `s3c-session-agent.swift` 627 → 3. Pure moves.
+
 # v0.16 (2026-07-22)
 
 One fingerprint per deploy instead of one per signature, a proper unlock window that tells you which app is asking, and your `~/.ssh/config` can now live in the vault.

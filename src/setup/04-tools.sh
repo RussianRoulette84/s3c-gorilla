@@ -88,8 +88,9 @@ if [[ -d "$SRC_DIR/sounds" ]]; then
    && success "sounds → $SHARE_DIR/sounds/"
 fi
 
-# s3c-unlock-window — native AppKit vault-unlock window the SSH agent spawns on a cold unlock.
-# Optional: if it fails to build, the agent falls back to the plain osascript prompt.
+# s3c-unlock-window — native AppKit vault-unlock window. Chip Macs: spawned by the SSH agent
+# on a cold unlock. Password Macs: spawned by session_unlock (with --password-mode).
+# Optional: if it fails to build, both fall back to a plain text prompt.
 if command -v swiftc &>/dev/null && [[ -f "$SRC_DIR/s3c-unlock-window.swift" ]]; then
  UW_BIN="$BUILD_DIR/s3c-unlock-window"
  UW_SRCS=""; for _s in $(swift_sources s3c-unlock-window); do UW_SRCS="$UW_SRCS $SRC_DIR/$_s"; done

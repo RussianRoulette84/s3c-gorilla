@@ -58,9 +58,11 @@ Replace `askMasterPassword()` (osascript ~704-723) with a native window returnin
 
 On cold-unlock password capture, warm all secrets: agent shells to a tiny entrypoint (e.g. `s3c-gorilla _fanout`, reads pw on stdin, sources `banners.sh`, calls `fan_out_all`, writes sentinel). Reverse direction already works.
 
-## Wave 4 — Password-only Macs
+## Wave 4 — Password-only Macs  ✅ done (v0.17)
 
 No SE, no per-sign biometric to spam — `s3c-session-agent` already caches the master pw per-tty (TTL) and `.ssh.sock` serves keys without re-auth. Map scope→lifetime (`session`=keep for TTL, `once`=no cache); window hides `app` + the toggle. No new per-sign logic.
+
+Shipped: `session_unlock` runs the window with `--password-mode`, reads `scope=`/`ttl=`, and passes seconds to `s3c-session-agent start <tty> <ppid> [ttlSec]`. `ScopeTimerSwitch` became table-driven so the `app` + `askpw` states drop out. One deviation from the plan: **`once` is a short idle TTL (`GORILLA_UNLOCK_ONCE_TTL`, default 30s), not "no cache"** — `ssh` needs a live agent socket for the whole connection, so zero caching is impossible here. Window skipped (plain prompt) when not installed, on a remote shell, or with `GORILLA_UNLOCK_WINDOW=""`.
 
 ## Wave 5 — Config + docs
 

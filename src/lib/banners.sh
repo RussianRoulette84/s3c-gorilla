@@ -13,6 +13,8 @@ _BANNERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 : "${GORILLA_SESSION_UNLOCK:=false}"
 : "${GORILLA_SESSION_AGENT:=/usr/local/bin/s3c-session-agent}"
+: "${GORILLA_UNLOCK_WINDOW:=/usr/local/bin/s3c-unlock-window}"
+: "${GORILLA_UNLOCK_ONCE_TTL:=30}"
 
 # ask_master_pw — prompt for the master password on the terminal (shared so
 # session_unlock / ssh-gorilla can use it, not just env/otp).
@@ -178,17 +180,46 @@ _paranoid_wipe() {
     done
 }
 
+# _unlock_window_ask — password-mode Macs get the SAME unlock window as chip Macs, minus the
+# states that only exist because of the Secure Enclave. Prints the window's raw block on
+# success. Skipped when: no window binary, a remote shell (no GUI to draw into), or opted out
+# with GORILLA_UNLOCK_WINDOW="". Cancel → non-zero, caller falls back to the terminal prompt.
+_unlock_window_ask() {
+    [[ -n "$GORILLA_UNLOCK_WINDOW" && -x "$GORILLA_UNLOCK_WINDOW" ]] || return 1
+    [[ -z "$SSH_CONNECTION" ]] || return 1
+    "$GORILLA_UNLOCK_WINDOW" --password-mode "${TERM_PROGRAM:-Terminal}" 2>/dev/null
+}
+
+# _unlock_window_secs <block> — turn the window's scope+ttl answer into an agent lifetime in
+# seconds. "once" collapses to a short idle window: SSH needs a live socket for the whole
+# connection, so "no cache at all" is impossible — the agent instead dies as soon as the work
+# stops. 0 = leave it to the configured TTL.
+_unlock_window_secs() {
+    local block="$1" scope ttl
+    scope=$(printf '%s\n' "$block" | sed -n 's/^scope=//p')
+    ttl=$(printf '%s\n' "$block" | sed -n 's/^ttl=//p')
+    if [[ "$scope" == "once" ]]; then printf '%s' "${GORILLA_UNLOCK_ONCE_TTL:-30}"; return; fi
+    if [[ "$ttl" =~ ^[0-9]+$ ]] && (( ttl > 0 )); then printf '%s' "$(( ttl * 60 ))"; return; fi
+    printf '0'
+}
+
 # session_unlock — ensure the per-tty agent holds the master password. Prompts
 # ONCE and pipes the pw straight into the agent (never returned to this shell).
 # Returns 0 when the agent is (now) unlocked, non-zero otherwise. (B1)
 session_unlock() {
-    local tty pw
+    local tty pw block secs=0
     [[ "$GORILLA_SESSION_UNLOCK" == "true" && -x "$GORILLA_SESSION_AGENT" ]] || return 1
     tty=$(tty 2>/dev/null || echo no-tty)
     "$GORILLA_SESSION_AGENT" get "$tty" >/dev/null 2>&1 && return 0   # already unlocked
-    pw=$(ask_master_pw); [[ -z "$pw" ]] && return 1
-    printf '%s' "$pw" | "$GORILLA_SESSION_AGENT" start "$tty" "$PPID" 2>/dev/null
-    unset pw
+    if block=$(_unlock_window_ask) && [[ -n "$block" ]]; then
+        pw=$(printf '%s\n' "$block" | head -1)
+        secs=$(_unlock_window_secs "$block")
+    else
+        pw=$(ask_master_pw)
+    fi
+    [[ -z "$pw" ]] && return 1
+    printf '%s' "$pw" | "$GORILLA_SESSION_AGENT" start "$tty" "$PPID" "$secs" 2>/dev/null
+    unset pw block
     "$GORILLA_SESSION_AGENT" get "$tty" >/dev/null 2>&1
 }
 

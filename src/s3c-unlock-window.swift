@@ -8,6 +8,8 @@
 //   ttl=<minutes>         (0 = no timer)
 // Cancel / empty password → exit 1 (nothing printed). The agent also passes argv:
 //   [1] = requesting app name, [2] = its .app bundle path — shown as the "guard" motif.
+//   --password-mode  = Mac with no Secure Enclave (keys come from the per-tty session
+//                      agent), so the "this app" and "ask pw each time" states are hidden.
 //
 // Controls live in unlock-controls.swift; palette/panel in unlock-theme.swift.
 
@@ -31,8 +33,12 @@ final class UnlockController: NSObject {
     private let H: CGFloat = 212
 
     // Who triggered SSH — passed by the agent as argv: [1]=app name, [2]=app bundle path.
-    let appName = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
-    let appPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
+    // `--password-mode` (any position) = Mac without a Secure Enclave: drop the scope choices
+    // that only exist because of the chip. Flags are filtered out of the positional args.
+    private static let argv = Array(CommandLine.arguments.dropFirst()).filter { !$0.hasPrefix("--") }
+    let passwordMode = CommandLine.arguments.contains("--password-mode")
+    let appName = UnlockController.argv.count > 0 ? UnlockController.argv[0] : ""
+    let appPath = UnlockController.argv.count > 1 ? UnlockController.argv[1] : ""
 
     private var busyOverlay: NSView?
     private var busyLabel: NSTextField?
@@ -126,7 +132,7 @@ final class UnlockController: NSObject {
         // Row 2: the switcherdropdown (scope + timer + paranoid "Ask pw") spans the row; Unlock right.
         let unlockW: CGFloat = 108
         let switchW = colW - unlockW - 12
-        scope = ScopeTimerSwitch(biometry: biometry)
+        scope = ScopeTimerSwitch(biometry: biometry, passwordMode: passwordMode)
         scope.frame = NSRect(x: colX, y: 30, width: switchW, height: 44)
         root.addSubview(scope)
 

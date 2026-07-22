@@ -172,6 +172,11 @@ install_ssh_password_mode() {
  # per-tty s3c-session-agent socket and unlocks it on first `ssh` (one prompt/tab).
  item "SSH served by the per-tty session agent — first 'ssh' in a tab prompts once,"
  item "then env/otp/ssh share that unlock. (GUI SSH clients need chip mode.)"
+ if [[ -x "$BIN_DIR/s3c-unlock-window" ]]; then
+ item "That prompt is the unlock window: pick 'Just once', 'Until lock' or a timer."
+ else
+ warn "Unlock window missing — you'll get the plain text prompt with the config TTL."
+ fi
  return 0
 }
 

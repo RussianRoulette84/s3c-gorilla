@@ -364,8 +364,11 @@ Prefer the old behaviour permanently? Set `GORILLA_SSH_UNLOCK_SCOPE="once"` in y
 always demand the master password instead of the fingerprint shortcut, set
 `GORILLA_SSH_ASK_PW_EACH_TIME="1"`.
 
-On Macs **without** Touch ID there is nothing to spam — the per-terminal session agent already
-holds your password for the session — so the window simply drops the fingerprint-only choices.
+On Macs **without** Touch ID you get the same window, minus the two choices that only exist
+because of the chip ("this app" and "ask pw each time"). Your answer sets how long the per-tab
+helper holds the password: **Just once** (it lets go ~30 seconds after the work stops — SSH
+needs a live connection, so it can't be truly zero), **Until lock**, or a **timer**. Tune the
+"just once" window with `GORILLA_UNLOCK_ONCE_TTL`.
 
 ## KeePassXC GUI push (optional, chip mode)
 

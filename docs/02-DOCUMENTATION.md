@@ -89,6 +89,22 @@ sealed, `mlock`'d, memory only) and serves env/otp/ssh so they stop
 re-prompting **in that terminal tab**. It is wiped on tab close,
 logout, screen lock, or TTL expiry.
 
+That first prompt is the same native unlock window chip Macs get, run
+with `--password-mode` so the Secure-Enclave-only states are hidden.
+Its three states map straight onto how long the helper lives:
+
+| Window state | Helper lifetime |
+|--------------|-----------------|
+| Just once    | `GORILLA_UNLOCK_ONCE_TTL` seconds of idle (default 30) |
+| Until lock   | `GORILLA_UNLOCK_TTL` (default 2 h), screen lock, tab close |
+| ⏱ timer      | the minutes you picked |
+
+"Just once" cannot be zero: `ssh` needs a live agent socket for the
+whole connection, so it means "let go as soon as the work stops"
+instead. The window is skipped — plain text prompt, configured TTL —
+when it isn't installed, when you're on a remote shell
+(`SSH_CONNECTION` set), or when you set `GORILLA_UNLOCK_WINDOW=""`.
+
 ---
 
 ## `s3c-gorilla` CLI reference
@@ -212,6 +228,8 @@ won't overwrite it).
 | `GORILLA_SSH_MODE` | `chip-wrap` | `chip-wrap` (keep existing key) or `se-born` (chip-generated). Set only on Touch ID machines. |
 | `GORILLA_SESSION_UNLOCK` | `false` | Hold the master password in a per-tab memory agent so env/otp/ssh stop re-prompting. Defaults OFF; on Touch ID machines it bypasses the per-decrypt fingerprint gate. |
 | `GORILLA_UNLOCK_TTL` | `7200` | Seconds the session agent holds the password before it self-expires (activity resets it). |
+| `GORILLA_UNLOCK_ONCE_TTL` | `30` | Password mode: idle seconds the session agent survives when you pick "Just once" in the unlock window. |
+| `GORILLA_UNLOCK_WINDOW` | `/usr/local/bin/s3c-unlock-window` | Path to the unlock window. Set to `""` to always use the plain text prompt. |
 | `GORILLA_SSH_UNLOCK_SCOPE` | `session` | How long a warm SSH key survives when the unlock window wasn't shown (a terminal tool opened the vault first): `once`, `app`, or `session`. |
 | `GORILLA_SSH_ASK_PW_EACH_TIME` | `0` | Chip mode: demand the master password on every re-unlock instead of the Touch ID shortcut. Also selectable per-unlock in the window. |
 | `GORILLA_SCAN_ROOTS` | `~/Projects:~/Code:~/Workspaces:~/src` | Extra colon-separated roots for `s3c-gorilla scan`. |

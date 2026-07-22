@@ -10,9 +10,13 @@
 // TTL, SIGTERM (logout), screen lock, parent-shell death, and reboot (memory-only).
 //
 // Subcommands (invoked by the shell tools as a client; no `nc` dependency):
-//   s3c-session-agent start <tty> <ppid>   # read pw from stdin, daemonize, hold
+//   s3c-session-agent start <tty> <ppid> [ttlSec]   # read pw from stdin, daemonize, hold
 //   s3c-session-agent get   <tty>          # print pw if unlocked & unexpired
 //   s3c-session-agent stop  <tty>          # wipe + exit the agent for this tty
+//
+// This file is the daemon: config, the shared state queue, the accept loops and @main.
+// session-crypto.swift holds the SecretBox + socket plumbing; session-vault.swift does the
+// kdbx extraction and TOTP.
 
 import Foundation
 import CryptoKit
@@ -80,268 +84,6 @@ func socketPath(forTTY tty: String) -> String {
     return "\(sessionDir)/\(hash).sock"
 }
 
-// MARK: - Obfuscated, mlock'd secret store
-
-// Holds the master password as a CryptoKit AES-GCM sealed box. BE HONEST ABOUT WHAT THIS
-// BUYS: the key and the sealed bytes both live in this same process's (mlock'd) memory, so
-// an attacker who can read our address space (debugger, same-uid + task_for_pid) gets both
-// and trivially recovers the password — this is NOT encryption-at-rest-in-RAM. What it
-// actually defends: the password never sits as plaintext in a core dump, a `strings` of the
-// heap, or swap (RLIMIT_CORE=0 + mlock), and the AEAD tag catches accidental corruption.
-// Defense-in-depth and tidiness, not a cryptographic boundary against a privileged peer. (H5)
-final class SecretBox {
-    private var keyPtr: UnsafeMutableRawPointer
-    private var sealedPtr: UnsafeMutableRawPointer
-    private let keyLen = 32
-    private let sealedLen: Int
-
-    init?(_ pw: [UInt8]) {
-        let key = SymmetricKey(size: .bits256)
-        guard let sealed = try? AES.GCM.seal(Data(pw), using: key),
-              let combined = sealed.combined else { return nil }
-        sealedLen = combined.count
-        keyPtr = UnsafeMutableRawPointer.allocate(byteCount: keyLen, alignment: 1)
-        sealedPtr = UnsafeMutableRawPointer.allocate(byteCount: max(sealedLen, 1), alignment: 1)
-        if mlock(keyPtr, keyLen) != 0 { dlog("mlock(key) failed: \(String(cString: strerror(errno)))") }
-        if mlock(sealedPtr, max(sealedLen, 1)) != 0 { dlog("mlock(sealed) failed: \(String(cString: strerror(errno)))") }
-        key.withUnsafeBytes { raw in keyPtr.copyMemory(from: raw.baseAddress!, byteCount: keyLen) }
-        combined.withUnsafeBytes { raw in sealedPtr.copyMemory(from: raw.baseAddress!, byteCount: sealedLen) }
-    }
-
-    // Reveal into a fresh buffer; caller must zero it after use. nil on tamper/failure.
-    func reveal() -> [UInt8]? {
-        let key = SymmetricKey(data: Data(bytes: keyPtr, count: keyLen))
-        let combined = Data(bytes: sealedPtr, count: sealedLen)
-        guard let box = try? AES.GCM.SealedBox(combined: combined),
-              let plain = try? AES.GCM.open(box, using: key) else { return nil }
-        return [UInt8](plain)
-    }
-
-    func wipe() {
-        memset(keyPtr, 0, keyLen)
-        memset(sealedPtr, 0, max(sealedLen, 1))
-        munlock(keyPtr, keyLen); munlock(sealedPtr, max(sealedLen, 1))
-        keyPtr.deallocate(); sealedPtr.deallocate()
-    }
-}
-
-// MARK: - Hardening
-
-func hardenProcess() {
-    var rl = rlimit(rlim_cur: 0, rlim_max: 0)   // no core dumps — never leak memory on crash
-    setrlimit(RLIMIT_CORE, &rl)
-}
-
-// MARK: - Low-level unix socket
-
-func makeSockaddr(_ path: String) -> sockaddr_un {
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let bytes = Array(path.utf8) + [0]
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-        ptr.withMemoryRebound(to: UInt8.self, capacity: bytes.count) { bp in
-            for (i, b) in bytes.enumerated() where i < 104 { bp[i] = b }
-        }
-    }
-    return addr
-}
-
-func selfPath() -> String {
-    // Robust: ask dyld for our own absolute path (B9).
-    var size: UInt32 = 0
-    _ = _NSGetExecutablePath(nil, &size)
-    if size > 0 {
-        var buf = [CChar](repeating: 0, count: Int(size))
-        if _NSGetExecutablePath(&buf, &size) == 0 { return String(cString: buf) }
-    }
-    let a0 = CommandLine.arguments[0]
-    return a0.hasPrefix("/") ? a0 : "/usr/local/bin/s3c-session-agent"
-}
-
-// MARK: - Client (get / stop)
-
-// Send a newline-terminated request ("G", "Q", "E <entry>", "O <entry>") and read
-// the full response. nil if no live agent answers.
-func clientSend(tty: String, _ request: String) -> [UInt8]? {
-    let path = socketPath(forTTY: tty)
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else { return nil }
-    defer { close(fd) }
-    var addr = makeSockaddr(path)
-    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-    let ok = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
-    }
-    guard ok == 0 else { return nil }
-    let line = Array((request + "\n").utf8)
-    guard write(fd, line, line.count) == line.count else { return nil }
-    var out = [UInt8]()
-    var buf = [UInt8](repeating: 0, count: 4096)
-    while true {
-        let n = read(fd, &buf, buf.count)
-        if n <= 0 { break }
-        out.append(contentsOf: buf[0..<n])
-    }
-    return out
-}
-
-// MARK: - In-agent kdbx extraction (B1/B2 — the master pw never returns to bash)
-
-var gEnvCache: [String: Data] = [:]
-var gSshKeyCache: [String: Data] = [:]   // extracted SSH private bytes — don't rotate in a session (HR #11)
-var gOtpCfg: [String: OtpCfg] = [:]      // validated TOTP seeds → compute codes locally (HR #12)
-
-func keepassxcPath() -> String {
-    for c in ["/opt/homebrew/bin/keepassxc-cli", "/usr/local/bin/keepassxc-cli"]
-    where FileManager.default.isExecutableFile(atPath: c) { return c }
-    if let path = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in path.split(separator: ":") {
-            let p = "\(dir)/keepassxc-cli"
-            if FileManager.default.isExecutableFile(atPath: p) { return p }
-        }
-    }
-    return "/usr/local/bin/keepassxc-cli"
-}
-
-func dbPath() -> String {
-    var db = "\(homeDir)/Library/Mobile Documents/com~apple~CloudDocs/KeePassDB.kdbx"
-    let cfg = "\(homeDir)/.config/s3c-gorilla/config"
-    if let text = try? String(contentsOfFile: cfg, encoding: .utf8) {
-        for line in text.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("GORILLA_DB=") {
-                db = String(t.dropFirst("GORILLA_DB=".count))
-                    .replacingOccurrences(of: "\"", with: "")
-                    .replacingOccurrences(of: "$HOME", with: homeDir)
-            }
-        }
-    }
-    return db
-}
-
-// Run keepassxc-cli with the revealed master pw on stdin; pw is zeroed before return.
-func runKeepassxc(_ kpxcArgs: [String]) -> Data? {
-    guard var pw = boxReveal() else { return nil }   // snapshot pw under the lock, then release
-    defer { for i in 0..<pw.count { pw[i] = 0 } }
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: keepassxcPath())
-    proc.arguments = kpxcArgs
-    let inP = Pipe(), outP = Pipe()
-    proc.standardInput = inP; proc.standardOutput = outP
-    proc.standardError = FileHandle.nullDevice
-    do { try proc.run() } catch { dlog("keepassxc spawn failed"); return nil }
-    inP.fileHandleForWriting.write(Data(pw + [0x0a]))
-    try? inP.fileHandleForWriting.close()
-    let out = outP.fileHandleForReading.readDataToEndOfFile()
-    proc.waitUntilExit()
-    if proc.terminationStatus != 0 {
-        dlog("keepassxc exit \(proc.terminationStatus): \(kpxcArgs.prefix(2).joined(separator: " "))")
-        return nil
-    }
-    return out
-}
-
-// extract-env: .env content is stable → cache per entry (B2).
-func extractEnv(_ entry: String) -> Data? {
-    touchActivity()
-    if let cached = cacheGet(entry) { return cached }
-    guard let d = runKeepassxc(["attachment-export", dbPath(), entry, ".env", "--stdout", "-q"]),
-          !d.isEmpty else { return nil }
-    cacheSet(entry, d)
-    return d
-}
-
-// --- Local TOTP (RFC 6238) so otp codes don't cost a keepassxc spawn each call (HR #12) ---
-struct OtpCfg { let secret: String; let period: Int; let digits: Int; let algo: String }
-
-func base32Decode(_ s: String) -> [UInt8]? {
-    let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
-    var lut = [Character: Int](); for (i, c) in alphabet.enumerated() { lut[c] = i }
-    var bits = 0, value = 0, out = [UInt8]()
-    for ch in s.uppercased() {
-        if ch == "=" || ch == " " || ch == "-" { continue }
-        guard let v = lut[ch] else { return nil }
-        value = (value << 5) | v; bits += 5
-        if bits >= 8 { out.append(UInt8((value >> (bits - 8)) & 0xff)); bits -= 8 }
-    }
-    return out.isEmpty ? nil : out
-}
-
-func parseOtpauth(_ raw: String) -> OtpCfg? {
-    // Accept a full otpauth:// URI or a bare base32 seed (legacy keepassxc attribute).
-    var secret = "", period = 30, digits = 6, algo = "SHA1"
-    if let q = raw.contains("?") ? raw.split(separator: "?").last : nil {
-        for kv in q.split(separator: "&") {
-            let p = kv.split(separator: "=", maxSplits: 1); guard p.count == 2 else { continue }
-            let v = String(p[1])
-            switch p[0].lowercased() {
-            case "secret": secret = v
-            case "period": period = Int(v) ?? 30
-            case "digits": digits = Int(v) ?? 6
-            case "algorithm": algo = v
-            default: break
-            }
-        }
-    } else {
-        secret = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    return secret.isEmpty ? nil : OtpCfg(secret: secret, period: period, digits: digits, algo: algo)
-}
-
-func totpNow(_ cfg: OtpCfg) -> String? { totpAt(cfg, Date().timeIntervalSince1970) }
-
-// Time injectable so the math is deterministically testable (RFC 6238 vector — see __totptest).
-func totpAt(_ cfg: OtpCfg, _ unixTime: TimeInterval) -> String? {
-    guard let key = base32Decode(cfg.secret) else { return nil }
-    let period = cfg.period > 0 ? cfg.period : 30
-    var counter = UInt64(unixTime) / UInt64(period)
-    var msg = [UInt8](repeating: 0, count: 8)
-    var i = 7; while i >= 0 { msg[i] = UInt8(counter & 0xff); counter >>= 8; i -= 1 }
-    let sk = SymmetricKey(data: Data(key))
-    let mac: [UInt8]
-    switch cfg.algo.uppercased() {
-    case "SHA256": mac = Array(HMAC<SHA256>.authenticationCode(for: Data(msg), using: sk))
-    case "SHA512": mac = Array(HMAC<SHA512>.authenticationCode(for: Data(msg), using: sk))
-    default:       mac = Array(HMAC<Insecure.SHA1>.authenticationCode(for: Data(msg), using: sk))
-    }
-    let off = Int(mac[mac.count - 1] & 0x0f)
-    let bin = (UInt32(mac[off] & 0x7f) << 24) | (UInt32(mac[off + 1]) << 16) | (UInt32(mac[off + 2]) << 8) | UInt32(mac[off + 3])
-    var mod = 1; for _ in 0..<cfg.digits { mod *= 10 }
-    var str = String(Int(bin) % mod)
-    while str.count < cfg.digits { str = "0" + str }   // manual pad — avoids %d 32/64-bit CVarArg
-    return str
-}
-
-// extract-otp: prefer a locally-computed code from a previously VALIDATED seed; otherwise ask
-// keepassxc (authoritative) and only cache the seed if our local code matches it — so a wrong
-// parser/impl degrades to the correct slow path and can never emit a wrong code.
-func extractOtp(_ entry: String) -> Data? {
-    touchActivity()
-    if let cfg = otpCfgGet(entry), let code = totpNow(cfg) { return Data(code.utf8) }
-    guard let kc = runKeepassxc(["show", "-t", dbPath(), entry, "-q"]) else { return nil }
-    let kcCode = String(data: kc, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if !kcCode.isEmpty,
-       let raw = runKeepassxc(["show", "-a", "otp", "--show-protected", dbPath(), entry, "-q"]),
-       let uri = String(data: raw, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-       let cfg = parseOtpauth(uri) {
-        // Validate against keepassxc for the CURRENT or PREVIOUS 30s window — if the period
-        // rolled between keepassxc's compute and ours, a single-window compare would never match
-        // and we'd stay on the slow path forever (HR #13).
-        let now = Date().timeIntervalSince1970
-        let period = TimeInterval(cfg.period > 0 ? cfg.period : 30)
-        if totpAt(cfg, now) == kcCode || totpAt(cfg, now - period) == kcCode {
-            otpCfgSet(entry, cfg)
-        }
-    }
-    return kc
-}
-
-// list <group> — enumerate entries under GROUP/ (e.g. "2FA") for otp discovery.
-func extractList(_ group: String) -> Data? {
-    touchActivity()
-    return runKeepassxc(["ls", dbPath(), "\(group)/", "-q"])
-}
-
 // MARK: - Server (start)
 
 var gBox: SecretBox?
@@ -379,7 +121,9 @@ func serverCleanupAndExit() -> Never {
     _exit(0)
 }
 
-func serve(tty: String, ppid: pid_t) -> Never {
+// ttlOverride > 0 = the lifetime the user picked in the unlock window (scope → seconds);
+// 0 = fall back to GORILLA_UNLOCK_TTL from the config.
+func serve(tty: String, ppid: pid_t, ttlOverride: Double = 0) -> Never {
     hardenProcess()
     gParentPID = ppid
     gSocketPath = socketPath(forTTY: tty)
@@ -412,7 +156,7 @@ func serve(tty: String, ppid: pid_t) -> Never {
     }
 
     // TTL + parent-shell-death poll.
-    let ttl = ttlSeconds()
+    let ttl = ttlOverride > 0 ? ttlOverride : ttlSeconds()
     gTTL = ttl
     DispatchQueue.global().async {
         while true {
@@ -575,6 +319,7 @@ case "start":
     guard args.count >= 3 else { exit(2) }
     let tty = args[2]
     let ppidStr = args.count >= 4 ? args[3] : "0"
+    let ttlStr = args.count >= 5 ? args[4] : "0"   // seconds; 0 = use the configured TTL
     // Idempotent: if an agent is already serving this tty, keep it.
     if let out = clientSend(tty: tty, "G"), !out.isEmpty { exit(0) }
     // Read the master password from stdin (the tool pipes it in, no trailing newline).
@@ -586,7 +331,7 @@ case "start":
     // password over stdin; it gets orphaned and keeps running after we exit.
     let child = Process()
     child.executableURL = URL(fileURLWithPath: selfPath())
-    child.arguments = ["__serve", tty, ppidStr]
+    child.arguments = ["__serve", tty, ppidStr, ttlStr]
     let inPipe = Pipe()
     child.standardInput = inPipe
     // Detach stdout/stderr so the daemon never holds a caller's $(...) pipe open.
@@ -602,6 +347,7 @@ case "__serve":
     guard args.count >= 3 else { exit(2) }
     let tty = args[2]
     let ppid = args.count >= 4 ? (pid_t(args[3]) ?? 0) : 0
+    let ttlOverride = args.count >= 5 ? (Double(args[4]) ?? 0) : 0
     setsid()   // new session, no controlling tty — a tab close won't SIGHUP us
     var pwBytes = [UInt8](FileHandle.standardInput.readDataToEndOfFile())
     while pwBytes.last == 0x0a { pwBytes.removeLast() }
@@ -611,7 +357,7 @@ case "__serve":
     gBox = SecretBox(pwBytes)
     for i in 0..<pwBytes.count { pwBytes[i] = 0 }
     guard gBox != nil else { dlog("SecretBox seal failed"); _exit(1) }
-    serve(tty: tty, ppid: ppid)
+    serve(tty: tty, ppid: ppid, ttlOverride: ttlOverride)
 
 case "__totptest":
     // RFC 6238 vector: base32 of ASCII "12345678901234567890", T=59 (counter 1), SHA1,

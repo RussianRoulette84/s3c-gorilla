@@ -138,30 +138,45 @@ final class PasswordDots: NSView {
     }
 }
 
-// MARK: - Switcherdropdown: scope states in one bar. Segment 3 (timer) opens a minutes dropdown;
-// segment 4 ("Ask pw", Touch ID Macs only) is the paranoid state — no cache, master pw each time.
+// MARK: - Switcherdropdown: scope states in one bar. The timer state opens a minutes dropdown;
+// "Ask pw" (Touch ID Macs only) is the paranoid state — no cache, master pw each time.
+
+// Which states the bar offers is decided by the Mac, so the segments are a table, not fixed
+// indices: password-only Macs have no per-app tracking and no per-sign biometric to skip.
+enum ScopeSeg { case once, app, session, timer, askpw }
 
 final class ScopeTimerSwitch: NSView {
     let biometry: Bool
+    let segs: [ScopeSeg]
     let ttlOptions: [(String, Int)] = [("5 min", 5), ("15 min", 15), ("30 min", 30),
                                        ("60 min", 60), ("2 hrs", 120), ("8 hrs", 480), ("24 hrs", 1440)]
     var ttlIndex = 1                          // default 15 min (only used when the timer state is picked)
-    var selected = 2 { didSet { restyle(); movePill(animated: true) } }   // default "Until lock"; timer OFF
+    var selected = 0 { didSet { restyle(); movePill(animated: true) } }
     private var buttons: [NSButton] = []
     private var weights: [CGFloat] = []
-    private let timerSeg = 3
-    private var askPwSeg = -1                  // 4 on Touch ID Macs, else absent
+    private var timerSeg: Int { segs.firstIndex(of: .timer) ?? -1 }
+    private var askPwSeg: Int { segs.firstIndex(of: .askpw) ?? -1 }
     private var panel: NSWindow?
     private let pill = CALayer()               // the single sliding selection highlight
 
     var scope: String {
-        switch selected { case 0: return "once"; case 1: return "app"; case askPwSeg: return "once"; default: return "session" }
+        switch segs[selected] {
+        case .once, .askpw: return "once"
+        case .app:          return "app"
+        default:            return "session"
+        }
     }
     var ttlMinutes: Int { selected == timerSeg ? ttlOptions[ttlIndex].1 : 0 }
     var askPw: Bool { selected == askPwSeg }
 
-    init(biometry: Bool) {
+    // passwordMode = no Secure Enclave. Keys are served by the per-tty session agent, so
+    // "this app" (owning-PID tracking) and "ask pw each time" (skipping a fingerprint that
+    // never happens) are meaningless there — only once / until-lock / timer make sense.
+    init(biometry: Bool, passwordMode: Bool) {
         self.biometry = biometry
+        var s: [ScopeSeg] = passwordMode ? [.once, .session, .timer] : [.once, .app, .session, .timer]
+        if biometry && !passwordMode { s.append(.askpw) }
+        segs = s
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = Palette.field.cgColor
@@ -172,8 +187,10 @@ final class ScopeTimerSwitch: NSView {
         pill.borderWidth = 1
         layer?.insertSublayer(pill, at: 0)   // behind the (transparent) buttons
 
-        weights = [1, 1, 1, 1.35]
-        if biometry { weights.append(0.9); askPwSeg = 4 }
+        weights = segs.map { (seg: ScopeSeg) -> CGFloat in
+            switch seg { case .timer: return 1.35; case .askpw: return 0.9; default: return 1 }
+        }
+        selected = segs.firstIndex(of: .session) ?? 0   // default "Until lock"; timer OFF
         for i in 0..<weights.count {
             let b = HoverSeg(title: "", target: self, action: #selector(pick(_:)))
             b.tag = i; b.isBordered = false; b.wantsLayer = true
@@ -228,11 +245,20 @@ final class ScopeTimerSwitch: NSView {
         }
     }
     private func titles() -> [String] {
-        var t = ["Just once", "This app", "Until lock", "⏱ \(ttlOptions[ttlIndex].0) ▾"]
-        if biometry { t.append("Ask pw") }
-        return t
+        segs.map { (seg: ScopeSeg) -> String in
+            switch seg {
+            case .once:    return "Just once"
+            case .app:     return "This app"
+            case .session: return "Until lock"
+            case .timer:   return "⏱ \(ttlOptions[ttlIndex].0) ▾"
+            case .askpw:   return "Ask pw"
+            }
+        }
     }
-    private func refreshTimerTitle() { buttons[timerSeg].title = titles()[timerSeg] }
+    private func refreshTimerTitle() {
+        guard timerSeg >= 0 else { return }
+        buttons[timerSeg].title = titles()[timerSeg]
+    }
 
     @objc private func pick(_ s: NSButton) {
         selected = s.tag

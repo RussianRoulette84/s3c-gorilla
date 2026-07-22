@@ -41,6 +41,11 @@ GORILLA_OTP_GROUP="2FA"
 # (activity resets the timer). Default 2 hours; lower it for a smaller exposure window.
 #GORILLA_UNLOCK_TTL="7200"
 
+# Password-mode Macs only: how long the agent lives when you pick "Just once" in the unlock
+# window. SSH needs a live socket for the whole connection, so "just once" can't mean zero —
+# it means the agent dies this many idle seconds after the work stops. Default 30.
+#GORILLA_UNLOCK_ONCE_TTL="30"
+
 # Seconds a chip-mode /tmp blob stays valid before it's treated as stale and re-fanned-out
 # (idle expiry, on top of the always-on reboot wipe). Default matches GORILLA_UNLOCK_TTL.
 #GORILLA_BLOB_TTL="7200"

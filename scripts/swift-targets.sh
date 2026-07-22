@@ -16,8 +16,8 @@ swift_targets() {
 swift_sources() {
     case "$1" in
         touchid-gorilla)   echo "touchid-gorilla.swift" ;;
-        s3c-ssh-agent)     echo "s3c-ssh-agent.swift ssh-wire.swift ssh-rsa.swift" ;;             # wire (#13) + RSA (#RSA)
-        s3c-session-agent) echo "s3c-session-agent.swift ssh-agent-core.swift ssh-wire.swift ssh-rsa.swift" ;;  # @main + core + wire + RSA
+        s3c-ssh-agent)     echo "s3c-ssh-agent.swift ssh-agent-pushed.swift ssh-agent-keys.swift ssh-agent-scope.swift ssh-agent-sign.swift ssh-agent-unlock.swift ssh-wire.swift ssh-rsa.swift" ;;   # server + pushed/registry/scope/sign/unlock + wire (#13) + RSA (#RSA)
+        s3c-session-agent) echo "s3c-session-agent.swift session-crypto.swift session-vault.swift ssh-agent-core.swift ssh-wire.swift ssh-rsa.swift" ;;  # @main + secret store + kdbx/TOTP + core + wire + RSA
         s3c-kdbx-parse)    echo "s3c-kdbx-parse.swift" ;;                           # XML fan-out parser (#X)
         s3c-unlock-window) echo "s3c-unlock-window.swift unlock-theme.swift unlock-controls.swift unlock-vault.swift unlock-guard.swift" ;;  # @main + palette + controls + kdbx + guard motif
         *)                 echo "" ;;
