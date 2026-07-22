@@ -96,24 +96,28 @@ Mode is chosen by the installer's LocalAuthentication probe → `have_chip` at r
 
 ## Progress
 
-**Overall ~70% of planned scope.** The day-to-day suite (P0–P1) is **shipped and usable**,
+**Overall ~88% of planned scope.** The day-to-day suite (P0–P1) is **shipped and usable**,
 password mode is hardened + unified (HP0/HP1/HP2: one prompt per tab for env+otp+ssh),
 and the umbrella CLI, fan-out (incl. the one-unlock XML fast path), `--paranoid`,
 secure-input, KeePassXC GUI push, and the installer refactor have all landed. RSA SSH
-keys now sign in password mode too. What remains is the binary-integrity triple-layer
-(#43: 0555 + SecCodeCheckValidity + cdhash pin), the bulk-XML-buffer `mlock` (H1), and
-the chip-mode screen-lock / logout blob wipes.
+keys now sign in password mode too. The **v0.15 hardening pass** landed the binary-integrity
+triple-layer (#43: 0555 + `SecCodeCheckValidity` + cdhash pin, enforce-if-present), H3
+hardened-runtime + timestamp signing, the bulk-XML `mlock` (H1), the chip-mode screen-lock /
+RunAtLoad / idle-TTL wipes, and the agent-hardening set (#18/#19/#20/#40). What remains is
+mostly Mac-verification of #43, the optional keys.json wrap (#42), and B5 audit-session binding.
 
 | # | Phase | Status | % |
 |:--:|---|:--:|--:|
 | P0 | Verification gate (keepassxc-cli XML export) | ✅ BUILT | 100% |
 | P1 | Core suite + dual mode (env/otp/ssh/touchid + password mode + session-unlock + 10-step installer) | ✅ BUILT | 100% |
-| P2 | Chip-mode fan-out pipeline — `fan_out_all` (one pw → wrap env/otp/ssh) + `.session-valid` sentinel + reboot-staleness + **one-unlock XML fast path** (`s3c-kdbx-parse`) + `--paranoid` + secure-input all BUILT; chip screen-lock/logout blob wipe remain | 🟡 PARTIAL | ~80% |
+| P2 | Chip-mode fan-out pipeline — `fan_out_all` + `.session-valid` + reboot-staleness + XML fast path + `--paranoid` + secure-input BUILT; **v0.15: agent screen-lock wipe, RunAtLoad pre-boot wipe (#26), idle 7200s mtime-TTL, unwrap-retry (#29), idempotent lock (#28)**; #41 progress + #30 iCloud-evict + #42 keys.json remain | 🟡 PARTIAL | ~92% |
 | P3 | `s3c-gorilla` umbrella CLI — status/doctor/wipe/lock/list/setup/uninstall/scan/**keychain** all BUILT | ✅ BUILT | ~95% |
 | P4 | install.sh → `src/setup/NN-*.sh` refactor — orchestrator (59L) + 00-common + 11 step files; SSH import factored (HR-6 #15/#16) + vault-key verify | ✅ BUILT | ~90% |
-| P5 | Security hardening (H1–H6 + concerns) — H4 secure-input, H5/H6, RLIMIT_CORE/mlock-checks, peer-cred done; #43 binary-pin + H1 bulk-buffer mlock remain | 🟡 PARTIAL | ~55% |
+| P5 | Security hardening — H4/H5/H6 + RLIMIT_CORE/mlock-checks + peer-cred done; **v0.15: H3 hardened-runtime+timestamp (`sign_binary`), #43 L1 0555, #43 L2/L3 cdhash pin (enforce-if-present), #18 signal-safe SecureEventInput, #20 pushed-keys heartbeat+5min, #40 ADD_IDENTITY bundle-ID whitelist, #19 flock timeout, H1/#23 XML mlock**; LWCR + #33 RSA harness remain | 🟡 PARTIAL | ~85% |
 | P6 | KeePassXC GUI push (ADD_IDENTITY / REMOVE_ALL) — push + zero-Touch-ID sign for Ed25519/ECDSA/**RSA** | ✅ BUILT | ~90% |
 | P7 | v0.14 follow-up backlog (B1–B17, I-a–I-f) — password-mode hardening HP0/HP1/HP2 done | 🟡 PARTIAL | ~85% |
+| P9 | **v0.16: SSH unlock persistence + native unlock window** — scope-gated warm-key cache in `s3c-ssh-agent.swift` (`once`/`app`/`session` + TTL cap, owning-app PID walk, sleep/lid wipe), new `src/s3c-unlock-window.swift` (AppKit: glowing icon, spinning password circles, 5-state switcherdropdown, requesting-app guard motif, D'oh/Woohoo, backdrop dim, unfold), `GORILLA_SSH_UNLOCK_SCOPE` + `GORILLA_SSH_ASK_PW_EACH_TIME`, window unlock fans out env/otp via `s3c-gorilla _fanout`. See [12-SSH-UNLOCK-PERSISTENCE.md](12-SSH-UNLOCK-PERSISTENCE.md) | ✅ BUILT (Mac verify pending) | ~90% |
+| P8 | **v0.16: vault writes + Infisical sync + backup** — `env-gorilla set/append/unset/edit` (comment-preserving, blob-cache bust), `s3c-gorilla backup`, `env-gorilla push/pull/sync` via `src/lib/s3c-infisical.sh` (per-project `# Infisical` block, interactive conflicts + `--force-infisical`), installer opt-in `11-infisical.sh` + `GORILLA_INFISICAL_ENABLED`. See [11-WRITE-S3C-AND-INFISCAL.md](11-WRITE-S3C-AND-INFISCAL.md) | ✅ BUILT (Mac+Infisical verify pending) | ~90% |
 
 Legend: ✅ BUILT · 🟡 PARTIAL · ⬜ PLANNED
 
@@ -163,7 +167,7 @@ Legend: ✅ BUILT · 🟡 PARTIAL · ⬜ PLANNED
 | ✅ | `keychain check` / `fix` / `import` | `src/lib/s3c-keychain.sh`; parses `security dump-keychain`, categorizes git/ssh/cloud, verify-in-kdbx → delete/import. REDACTED. (Auto-invoke-at-install-end deferred.) |
 | ✅ | `scan --env/--ssh/--git/--shell-history/--all` | `src/lib/s3c-scan.sh`; REDACTED (location + pattern name only, never secret bytes); Ed25519/ECDSA/RSA key encryption probe, git pickaxe, history grep |
 
-### P4 — install.sh → `src/setup/NN-*.sh` refactor ⬜ (current installer is a working monolith)
+### P4 — install.sh → `src/setup/NN-*.sh` refactor 🟡 ~95% (BUILT: 77L orchestrator + 12 step files; v0.15 hygiene: `set_config`+%q (#37/I-b), `sort -V` step order + lint rule (#35), idempotent re-import (I-c), shared `sign_binary` (I-a). Remaining: #36 terminal-notifier pin, curl-bash self-bootstrap)
 | Status | Item | Notes |
 |:--:|---|---|
 | ⬜ | refactor to `src/install.sh` + modular `src/setup/*.sh` (≤200-line main); curl-bash self-bootstrap | must preserve v0.14 reality (10 steps, password mode, session-unlock) |

@@ -41,6 +41,27 @@ GORILLA_OTP_GROUP="2FA"
 # (activity resets the timer). Default 2 hours; lower it for a smaller exposure window.
 #GORILLA_UNLOCK_TTL="7200"
 
+# Seconds a chip-mode /tmp blob stays valid before it's treated as stale and re-fanned-out
+# (idle expiry, on top of the always-on reboot wipe). Default matches GORILLA_UNLOCK_TTL.
+#GORILLA_BLOB_TTL="7200"
+
+# Wipe every cached secret the instant the screen locks (chip mode; default on). Set to "0"
+# to keep blobs across a lock — fewer re-prompts, lower security (logout/reboot/idle still wipe).
+#GORILLA_WIPE_ON_SCREEN_LOCK="1"
+
+# SSH unlock scope (chip mode) — how long the SSH agent keeps a key warm so a burst of signs
+# (fab deploy, git fetch, Xcode) costs ONE Touch ID instead of dozens. The unlock window picks
+# this per cold-unlock; this is the fallback when a terminal tool warmed the vault first.
+#   once    : Touch ID on every signature (most secure, original behavior)
+#   app     : one tap per owning app — stays warm until that app / terminal window quits
+#   session : one tap until vault close (screen lock / logout / sleep / reboot)  [default]
+#GORILLA_SSH_UNLOCK_SCOPE="session"
+
+# Paranoid SSH override (Touch ID Macs only; default off). When on, re-unlocking a cold/expired
+# key demands the master password window instead of the Touch ID shortcut. Toggle it in the
+# unlock window, or pin it here.
+#GORILLA_SSH_ASK_PW_EACH_TIME="0"
+
 # Colon-separated roots for `s3c-gorilla scan` (in addition to the built-in
 # ~/Projects ~/Code ~/Workspaces ~/src). Add wherever you keep code.
 #GORILLA_SCAN_ROOTS="$HOME/Projects:$HOME/Code:$HOME/work"
@@ -48,3 +69,9 @@ GORILLA_OTP_GROUP="2FA"
 # Paranoid mode: never cache a /tmp blob or fan out — extract the ONE requested secret,
 # use it, discard. Master pw every run, nothing reusable left behind. Per-call: --paranoid.
 #GORILLA_PARANOID="false"
+
+# Infisical sync (optional) — when true, `env-gorilla push|pull|sync <project>` mirror a
+# project's .env with an Infisical instance. The per-project connection (URL, machine-identity
+# client id/secret, projectId) lives INSIDE that project's own .env under a `# Infisical` block —
+# NOT here — so nothing sensitive is stored in this file. Set by the installer.
+#GORILLA_INFISICAL_ENABLED="false"

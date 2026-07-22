@@ -104,6 +104,20 @@ struct BigN: Comparable {
         return BigN(out)
     }
 
+    var isEven: Bool { (bytes[bytes.count - 1] & 1) == 0 }
+
+    // Bitwise right shift by one.
+    func shr1() -> BigN {
+        var out = [UInt8](repeating: 0, count: bytes.count)
+        var carry: UInt8 = 0
+        for i in 0..<bytes.count {
+            let v = bytes[i]
+            out[i] = (v >> 1) | (carry << 7)
+            carry = v & 1
+        }
+        return BigN(out)
+    }
+
     // Bitwise left shift by one.
     func shl1() -> BigN {
         var out = [UInt8](repeating: 0, count: bytes.count + 1)
@@ -132,6 +146,43 @@ struct BigN: Comparable {
         }
         return r
     }
+}
+
+// Modular inverse via the BINARY extended GCD — shifts, adds and subtracts only, no division.
+// This replaces Fermat (a^(m-2) mod m) for computing qinv: `mod` above is bit-serial long
+// division, so a 2048-bit modPow costs ~1500 of them and took MINUTES on a cold unlock — long
+// enough for the remote sshd to hit LoginGraceTime and drop the connection mid-handshake.
+// Requires an odd modulus (true here — p is an odd prime). Returns nil if it can't invert, and
+// every caller re-checks the result, so a bad answer can never reach a signature.
+func modInverse(_ a: BigN, _ m: BigN) -> BigN? {
+    if m.isEven || m == BigN.one { return nil }
+    var u = a.mod(m)
+    if u.isZero { return nil }
+    var v = m
+    var x1 = BigN.one
+    var x2 = BigN.zero
+    var spins = 0
+    while !(u == BigN.one) && !(v == BigN.one) {
+        spins += 1
+        if spins > 100_000 { return nil }            // never spin forever on malformed input
+        while u.isEven {
+            u = u.shr1()
+            x1 = x1.isEven ? x1.shr1() : (x1 + m).shr1()
+        }
+        while v.isEven {
+            v = v.shr1()
+            x2 = x2.isEven ? x2.shr1() : (x2 + m).shr1()
+        }
+        if u >= v {
+            u = u - v
+            x1 = (x1 >= x2) ? (x1 - x2) : (x1 + m - x2)
+        } else {
+            v = v - u
+            x2 = (x2 >= x1) ? (x2 - x1) : (x2 + m - x1)
+        }
+        if u.isZero || v.isZero { return nil }       // not coprime — no inverse exists
+    }
+    return (u == BigN.one) ? x1.mod(m) : x2.mod(m)
 }
 
 // Modular exponentiation: base^exp mod m. Square-and-multiply, MSB first.
@@ -183,8 +234,9 @@ func derSequence(_ content: Data) -> Data {
 // --- RSA OpenSSH-to-PKCS#1 bridge + sign -------------------------------
 
 // Convert raw OpenSSH RSA private bytes into PKCS#1 DER suitable for SecKey.
-// Heavy work lives here: one modular exponentiation (q^(p-2) mod p) — we pay
-// it once at bootstrap time and cache the result inside the wrap blob.
+// The only heavy step is qinv = q⁻¹ mod p. Binary extended GCD does it in milliseconds; the old
+// Fermat modPow took MINUTES for a 2048-bit key, which stalled the first ssh long enough for the
+// remote sshd to close the connection. We verify the fast answer and fall back if it's ever wrong.
 func convertOpenSSHRSAToPKCS1(_ openSSHBlob: Data) -> Data? {
     guard let c = parseOpenSSHPrivate(openSSHBlob, expectedType: "ssh-rsa"),
           let nData = c["n"], let eData = c["e"], let dData = c["d"],
@@ -192,7 +244,12 @@ func convertOpenSSHRSAToPKCS1(_ openSSHBlob: Data) -> Data? {
     let p = BigN(pData), q = BigN(qData), d = BigN(dData)
     let dp = d.mod(p - BigN.one)
     let dq = d.mod(q - BigN.one)
-    let qinv = modPow(q, p - BigN([0x02]), p)        // Fermat: q^(p-2) mod p
+    let qinv: BigN
+    if let inv = modInverse(q, p), (inv * q).mod(p) == BigN.one {
+        qinv = inv                                   // fast path, arithmetically verified
+    } else {
+        qinv = modPow(q, p - BigN([0x02]), p)        // fallback: Fermat q^(p-2) mod p (slow but proven)
+    }
     return derSequence(
         derInt(Data([0x00])) +   // version
         derInt(nData) +

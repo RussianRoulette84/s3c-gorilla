@@ -1,5 +1,5 @@
 # 06-ssh-config.sh — sanity-check ~/.ssh/config.
-section "[6/10] SSH config"
+section "[6/11] SSH config"
 
 SSH_CONFIG="$HOME/.ssh/config"
 if [[ -f "$SSH_CONFIG" ]]; then

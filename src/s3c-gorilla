@@ -121,6 +121,23 @@ cmd_lock() {
     echo "locked this terminal's session — next tool call will re-prompt."
 }
 
+# Snapshot the kdbx before you mutate it (env-gorilla set/edit, Infisical pull/sync). Manual,
+# no pruning — run it whenever you want a safety copy. Never deletes anything.
+cmd_backup() {
+    hdr "s3c-gorilla backup"
+    [[ -f "$GORILLA_DB" ]] || { failln "kdbx not found: $GORILLA_DB"; return 1; }
+    local dir="$HOME/.s3c-gorilla/backups" ts dest
+    mkdir -p "$dir" && chmod 700 "$dir"
+    ts=$(date +%Y%m%d-%H%M%S)
+    dest="$dir/$(basename "$GORILLA_DB" .kdbx)-$ts.kdbx"
+    if cp "$GORILLA_DB" "$dest" && chmod 600 "$dest"; then
+        ok "backup → $dest"
+        note "$(ls -1 "$dir"/*.kdbx 2>/dev/null | wc -l | tr -d ' ') backup(s) in $dir"
+    else
+        failln "backup failed (disk full? kdbx locked?)"; return 1
+    fi
+}
+
 cmd_list() {
     local kind="${1:-}"
     case "$kind" in ssh|env|otp) ;; *) echo "usage: s3c-gorilla list ssh|env|otp" >&2; return 2 ;; esac
@@ -176,6 +193,8 @@ s3c-gorilla — suite control
   s3c-gorilla doctor        full health check (deps, codesign, logs)
   s3c-gorilla wipe          drop ALL sessions now (hand-off / panic)
   s3c-gorilla lock          drop THIS terminal's session
+  s3c-gorilla backup        snapshot the kdbx → ~/.s3c-gorilla/backups/
+  s3c-gorilla ssh-config    show|install|edit — the vault-held ~/.ssh/config (SSH/ssh-config)
   s3c-gorilla list ssh|env|otp   names cached/available (no secrets)
   s3c-gorilla scan [--env|--ssh|--git|--shell-history|--all]
                             audit exposure: plaintext .env, ~/.ssh keys,
@@ -187,11 +206,84 @@ s3c-gorilla — suite control
 EOF
 }
 
+# ssh-config — the HOST's ~/.ssh/config lives in the vault as attachment 'config' on SSH/ssh-config
+# (containers get their own via SSH/<project>-ssh-config). `show` diffs vault vs disk; `install`
+# backs up whatever is there and writes the vault copy. Config only — never keys.
+cmd_ssh_config() {
+    local action="${1:-show}" entry="SSH/ssh-config" dst="$HOME/.ssh/config" pw out bak
+    hdr "s3c-gorilla ssh-config"
+    [[ -f "$GORILLA_DB" ]] || { failln "kdbx not found: $GORILLA_DB"; return 1; }
+    printf '🔐 KeePass master password: ' >&2; read -rs pw; printf '\n' >&2
+    out=$(printf '%s' "$pw" | keepassxc-cli attachment-export "$GORILLA_DB" "$entry" config --stdout -q 2>/dev/null)
+    # Empty means EITHER a wrong master password OR a missing attachment — say both, since
+    # blaming the attachment when the password was just mistyped sends you hunting the wrong bug.
+    [[ -n "$out" ]] || { unset pw; failln "could not read $entry/config — wrong master password, or the attachment is missing"; return 1; }
+    case "$action" in
+        show)
+            note "vault $entry holds $(printf '%s\n' "$out" | wc -l | tr -d ' ') lines"
+            if [[ -f "$dst" ]]; then
+                if printf '%s\n' "$out" | diff -q - "$dst" >/dev/null 2>&1; then
+                    ok "$dst already matches the vault"
+                else
+                    warnln "$dst DIFFERS from the vault (- disk, + vault):"
+                    printf '%s\n' "$out" | diff -u "$dst" - | head -60
+                    note "apply it with:  s3c-gorilla ssh-config install"
+                fi
+            else
+                warnln "$dst does not exist — run: s3c-gorilla ssh-config install"
+            fi ;;
+        install)
+            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+            if [[ -f "$dst" ]]; then
+                bak="$dst.bak-$(date +%Y%m%d-%H%M%S)"
+                cp "$dst" "$bak" && chmod 600 "$bak" && ok "backup → $bak"
+            fi
+            printf '%s\n' "$out" > "$dst" && chmod 600 "$dst" && ok "vault config → $dst" ;;
+        edit)
+            local tmp before after
+            tmp=$(mktemp); chmod 600 "$tmp"
+            printf '%s\n' "$out" > "$tmp"
+            before=$(shasum "$tmp" 2>/dev/null | awk '{print $1}')
+            "${EDITOR:-vi}" "$tmp"
+            after=$(shasum "$tmp" 2>/dev/null | awk '{print $1}')
+            if [[ "$before" == "$after" ]]; then
+                note "no changes — vault left as-is"
+            elif printf '%s\n' "$pw" | keepassxc-cli attachment-import "$GORILLA_DB" "$entry" config "$tmp" -q -f &>/dev/null; then
+                ok "vault updated ($entry/config)"
+                note "now apply it:  s3c-gorilla ssh-config install"
+            else
+                failln "failed to write $entry/config"
+            fi
+            trash "$tmp" 2>/dev/null || : > "$tmp" ;;
+        *) echo "usage: s3c-gorilla ssh-config [show|install|edit]" >&2; unset pw; return 2 ;;
+    esac
+    unset pw
+}
+
+# _fanout — INTERNAL, not user-facing. Reads the master password on stdin and chip-wraps every
+# ENV/OTP/SSH secret in one unlock. Called by the SSH agent after its unlock window collects the
+# password, so a vault opened from a GUI app also warms env/otp and terminal tools stop asking.
+cmd_fanout() {
+    have_chip || return 0
+    local lib="$SHARE_DIR/banners.sh"
+    [[ -r "$lib" ]] || lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/banners.sh"
+    [[ -r "$lib" ]] || return 0
+    # shellcheck source=/dev/null
+    source "$lib"
+    local pw; IFS= read -r pw || true
+    [[ -n "$pw" ]] || return 0
+    fan_out_all "$pw"
+    unset pw
+}
+
 case "${1:-status}" in
     status|"") cmd_status ;;
     doctor)    cmd_doctor ;;
     wipe)      cmd_wipe ;;
     lock)      cmd_lock ;;
+    backup)    cmd_backup ;;
+    ssh-config) shift; cmd_ssh_config "$@" ;;
+    _fanout)   cmd_fanout ;;
     list)      shift; cmd_list "$@" ;;
     scan)
         shift

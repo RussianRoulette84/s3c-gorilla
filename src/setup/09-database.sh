@@ -1,5 +1,5 @@
 # 09-database.sh — check the kdbx exists where the tools expect it.
-section "[9/10] KeePassXC database"
+section "[9/11] KeePassXC database"
 
 if [[ -f "$DB_PATH" ]]; then
  success "Found: $(basename "$DB_PATH")"

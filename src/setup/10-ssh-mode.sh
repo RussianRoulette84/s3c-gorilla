@@ -1,8 +1,9 @@
-# 10-ssh-mode.sh — LAST STEP. SSH keys into the vault + agent setup.
+# 10-ssh-mode.sh — the last step that can fail meaningfully. SSH keys into the vault + agent setup.
+# (11-infisical.sh runs after, but it's optional and can't break anything installed here.)
 # Chip mode (install_ssh_step) and password mode (install_ssh_password_mode) share the
 # key-import loop via _import_ssh_keys (HR #16); they differ only in the keys.json "mode"
 # value and what happens AFTER import (LaunchAgent vs per-tty session agent).
-section "[10/10] SSH mode + agent setup"
+section "[10/11] SSH mode + agent setup"
 
 AGENT_DIR="$HOME/.s3c-gorilla"
 PUB_DIR="$AGENT_DIR/pubkeys"
@@ -18,7 +19,7 @@ source "$SETUP_DIR/import-ssh-keys.sh"
 
 install_ssh_step() {
  # ---------- Pre-flight ----------
- info "This is the LAST step. Failure will NOT break the other tools just installed."
+ info "Final setup step. Failure here will NOT break the other tools just installed."
  item "Two SSH modes available:"
  item ""
  item "  1) chip-wrap (default, recommended) — works with your existing SSH key."
@@ -43,13 +44,7 @@ install_ssh_step() {
  fi
 
  # Persist the mode into user config so agent + tools read the same source.
- if [[ -f "$CONFIG_FILE" ]]; then
- if grep -q '^GORILLA_SSH_MODE=' "$CONFIG_FILE"; then
- sed -i '' "s/^GORILLA_SSH_MODE=.*/GORILLA_SSH_MODE=\"$GORILLA_SSH_MODE\"/" "$CONFIG_FILE"
- else
- echo "GORILLA_SSH_MODE=\"$GORILLA_SSH_MODE\"" >> "$CONFIG_FILE"
- fi
- fi
+ set_config GORILLA_SSH_MODE "$GORILLA_SSH_MODE"
 
  # ---------- Mode 2: SE-born ----------
  if [[ "$GORILLA_SSH_MODE" == "se-born" ]]; then
@@ -90,11 +85,31 @@ EOF
  # ---------- Install LaunchAgent (both modes) ----------
  info "Installing s3c-ssh-agent LaunchAgent..."
  mkdir -p "$HOME/Library/LaunchAgents"
- cp "$LAUNCH_PLIST_SRC" "$LAUNCH_PLIST_DST"
+ cp -f "$LAUNCH_PLIST_SRC" "$LAUNCH_PLIST_DST"
  launchctl bootout "gui/$UID/com.slav-it.s3c-ssh-agent" 2>/dev/null || true
- launchctl bootstrap "gui/$UID" "$LAUNCH_PLIST_DST" 2>/dev/null || {
- warn "launchctl bootstrap failed — agent will start on next login"
- }
+ # Keep launchctl's message: swallowing it is how an install "succeeds" with a dead agent.
+ local _bs_err
+ _bs_err=$(launchctl bootstrap "gui/$UID" "$LAUNCH_PLIST_DST" 2>&1) || true
+ # Force the freshly-installed binary to run NOW. `bootstrap` often "fails" because the label is
+ # still loaded from a prior login session — but the service exists, so `kickstart -k` restarts it
+ # with the new binary. This is what avoids the "log out and back in for the agent to update" wart.
+ launchctl kickstart -k "gui/$UID/com.slav-it.s3c-ssh-agent" >/dev/null 2>&1 || true
+
+ # VERIFY, don't assume: the service must be registered AND its socket must actually appear.
+ local _agent_ok=false _i
+ if launchctl print "gui/$UID/com.slav-it.s3c-ssh-agent" >/dev/null 2>&1; then
+ for _i in 1 2 3 4 5; do [[ -S "$AGENT_DIR/agent.sock" ]] && { _agent_ok=true; break; }; sleep 1; done
+ fi
+ if $_agent_ok; then
+ success "Agent registered and listening → $AGENT_DIR/agent.sock"
+ else
+ error "SSH agent did NOT come up — ssh and GUI apps will not authenticate."
+ [[ -n "$_bs_err" ]] && item "launchctl said: $_bs_err"
+ item "Fix by hand, then re-run this step:"
+ item "  launchctl bootstrap gui/\$UID $LAUNCH_PLIST_DST"
+ item "  launchctl kickstart -k gui/\$UID/com.slav-it.s3c-ssh-agent"
+ item "  tail -20 /tmp/s3c-ssh-agent.err.log"
+ fi
  # Export SSH_AUTH_SOCK into launchd's environment so GUI apps launched
  # from Dock / Finder / Spotlight (which don't read .zprofile) inherit it.
  launchctl setenv SSH_AUTH_SOCK "$AGENT_DIR/agent.sock" 2>/dev/null || true
@@ -120,13 +135,18 @@ EOF
  read -p "Test a real SSH host? (hostname or Enter=skip): " test_host
  if [[ -n "$test_host" ]]; then
  local host_arg="$test_host"
- [[ "$test_host" != *@* ]] && host_arg="root@$test_host"
+ # user comes from ~/.ssh/config (a trailing `Host *` with `User root` is the usual setup)
+ # This is the SLOW one: the first ssh cold-starts the vault — unlock window, Touch ID, then a
+ # fan-out of every secret. It can sit silent for 30s+, so run it behind a spinner.
  # Capture ssh's OWN exit status — piping into `tail` would make the `if`
  # test tail's status (always 0) and falsely report success on auth failure.
  local ssh_out ssh_rc
- ssh_out="$(SSH_AUTH_SOCK="$AGENT_DIR/agent.sock" \
- ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit 2>&1)"
+ SSH_AUTH_SOCK="$AGENT_DIR/agent.sock" \
+ run_spinner "Connecting to $test_host — unlock window may appear (watch other Spaces)…" \
+ ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit
  ssh_rc=$?
+ ssh_out="$(cat "$SPINNER_OUT" 2>/dev/null)"
+ trash "$SPINNER_OUT" 2>/dev/null || true
  printf '%s\n' "$ssh_out" | tail -5
  if [[ $ssh_rc -eq 0 ]]; then
  success "Connected to $test_host — end-to-end works"

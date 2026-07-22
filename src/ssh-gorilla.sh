@@ -1,6 +1,6 @@
 ##########################################################################################
 ## ssh-gorilla - thin SSH wrapper for .zprofile
-##   - auto-prepends root@ to bare hostnames
+##   - no username rewriting: ssh_config decides the user (see `User` + a trailing `Host *`)
 ##   - PASSWORD MODE + session-unlock: serves keys from the per-tty s3c-session-agent
 ##     (one prompt per tab; the master pw never leaves the agent). Chip mode keeps the
 ##     static SSH_AUTH_SOCK → the SE-backed LaunchAgent set in .zprofile.
@@ -47,29 +47,10 @@ ssh() {
         while [[ ! -S "$SSH_AUTH_SOCK" && $_i -lt 60 ]]; do sleep 0.05; _i=$((_i+1)); done
     fi
 
-    local args=()
-    local host_set=false
-    for arg in "$@"; do
-        if [[ "$host_set" == false && "$arg" != -* ]]; then
-            local prev=""
-            [[ ${#args[@]} -gt 0 ]] && prev="${args[-1]}"
-            local flag_takes_value=false
-            case "$prev" in
-                -p|-i|-l|-o|-F|-J|-L|-R|-D|-W|-b|-c|-e|-m|-S|-w|-E|-B|-I|-Q|-O)
-                    flag_takes_value=true ;;
-            esac
-            if $flag_takes_value; then
-                args+=("$arg")
-            elif [[ "$arg" != *@* ]]; then
-                args+=("root@$arg")
-                host_set=true
-            else
-                args+=("$arg")
-                host_set=true
-            fi
-        else
-            args+=("$arg")
-        fi
-    done
-    command ssh "${args[@]}"
+    # NO username rewriting. We used to prepend root@ to bare hostnames, but rewriting the command
+    # line OVERRIDES ssh_config — so `ssh github.com` became root@github.com and ignored the
+    # `User git` block (same for ps4). Which user to use is per-host knowledge that belongs in the
+    # config, not hardcoded here: put `User root` in a `Host *` block placed LAST in the file
+    # (ssh takes the first value it finds, so specific blocks must come before it).
+    command ssh "$@"
 }

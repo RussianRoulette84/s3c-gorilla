@@ -91,7 +91,9 @@ when launched from a GUI app):
 
 - **Touch ID Mac:** it chip-wraps your secrets into
   `/tmp/s3c-gorilla/` and Touch ID handles reruns until reboot /
-  logout / idle.
+  logout / idle. The first `ssh` opens the unlock panel, where you
+  choose how long the SSH key stays ready — pick "Until lock" and a
+  whole deploy costs one fingerprint instead of dozens.
 - **No-chip Mac:** every call re-prompts, unless you turned on
   `GORILLA_SESSION_UNLOCK` — then a per-tab helper remembers the
   password for that terminal tab.

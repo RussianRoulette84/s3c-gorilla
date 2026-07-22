@@ -134,9 +134,10 @@ Both are tied to your current fingerprints and die on logout.
 - **SSH keys live in your KeePassXC database.** No `id_rsa` on
   disk. Our signed SSH agent (runs as a background service, so GUI
   tools like SourceTree and VS Code work natively) signs with the
-  key only at the moment you `ssh somehost`. On a chip Mac that's
-  one TouchID per sign; on a no-chip Mac the key is unlocked once
-  per session.
+  key only at the moment you `ssh somehost`. On a chip Mac the first
+  connection opens the unlock window, where you pick how long the key
+  stays ready — so a whole deploy costs one fingerprint, not one per
+  signature. On a no-chip Mac the key is unlocked once per session.
 - **Per-project `.env` injection at runtime.** `env-gorilla proj
   -- npm run dev` pulls the `.env` out of kdbx straight into the
   child process's memory. Never writes to disk. Never exports to
@@ -155,6 +156,10 @@ Both are tied to your current fingerprints and die on logout.
     in locked memory) so env/otp/ssh stop asking again in that tab.
   - Typing the master password ten times a day is the friction that
     makes people turn security off — we type it once.
+  - On a **chip Mac the per-tab helper is off** — you already get one
+    password per boot plus a fingerprint, and SSH has its own unlock
+    scopes, so it would only make new windows re-prompt. On a no-chip
+    Mac it's the main convenience, so it defaults on.
 - **Two SSH modes.** Keep your existing key (imported and locked in
   the vault), or have the chip mint a brand-new key that can never
   leave it. If KeePassXC's GUI is unlocked it can hand keys straight
@@ -244,6 +249,123 @@ complete reference.
 
 ---
 
+
+## Editing secrets from the CLI (no GUI)
+
+Add, change, or remove `.env` secrets without opening KeePassXC — the
+`.env` lives as an attachment in the vault and these commands round-trip
+it in one master-pw prompt, then refresh the chip cache automatically:
+
+```bash
+env-gorilla set slav-ai SENTRY_TOKEN=sntrys_xxx    # upsert key(s) — keeps comments + order
+pbpaste | env-gorilla append slav-ai               # paste a whole "# commented" block
+env-gorilla unset slav-ai OLD_KEY                  # remove key(s)
+env-gorilla edit slav-ai                           # open the .env in $EDITOR
+```
+
+Snapshot the vault first whenever you're nervous:
+
+```bash
+s3c-gorilla backup           # → ~/.s3c-gorilla/backups/<db>-<timestamp>.kdbx
+```
+
+### Infisical sync (optional)
+
+If you also keep secrets in [Infisical](https://infisical.com), s3c-gorilla
+can mirror a project's `.env` with it. The per-project connection
+(URL + machine-identity client id/secret + projectId) lives inside that
+project's own `.env` under a `# Infisical` block — nothing is stored in
+config, nothing is hardcoded. Enable it in the installer, then:
+
+```bash
+env-gorilla push slav-ai      # local .env → Infisical
+env-gorilla pull slav-ai      # Infisical → local .env
+env-gorilla sync slav-ai      # reconcile both ways
+# conflicts prompt per-key; add --force-infisical to auto-apply the suggested side
+env-gorilla set slav-ai API_KEY=xxx --push   # write locally AND push in one shot
+```
+
+The `# Infisical` connection block itself is never uploaded as a secret.
+
+
+---
+
+
+## Ship a project its SSH config (vault → container)
+
+A project can keep its **SSH client config** in the vault alongside its secrets,
+so callers (like a Docker container) get it without a copy on disk. Store the
+config as an attachment named `config` on a `SSH/<project>-ssh-config` entry.
+When you run a project, `env-gorilla` extracts it on the **same** master-pw
+unlock as the `.env`, drops it at `/tmp/s3c-gorilla/<project>/config`, and points
+the launched program at it via `$S3C_ATTACHMENT_DIR`:
+
+```bash
+env-gorilla llm-docker -- bash -c 'cp "$S3C_ATTACHMENT_DIR/config" /root/.ssh/config'
+```
+
+The config is non-secret (hostnames/users only) — SSH **keys** stay as base64
+values inside the `.env` and are injected as environment variables, never a file.
+The host's own SSH client uses `SSH/ssh-config`; each container uses its own
+`SSH/<project>-ssh-config`. One Touch ID covers the whole session.
+
+### Your own `~/.ssh/config`, kept in the vault
+
+```bash
+s3c-gorilla ssh-config show      # what's in the vault vs what's on disk
+s3c-gorilla ssh-config edit      # edit the vault copy in $EDITOR
+s3c-gorilla ssh-config install   # write it to ~/.ssh/config (backs up the old one)
+```
+
+**We never rewrite the username** — that's your config's job. SSH keeps the
+**first** value it finds, so specific hosts must come before the catch-all:
+
+```
+Host github.com          # specific FIRST
+    User git
+
+Host *                   # catch-all LAST
+    User root
+    IdentityAgent ~/.s3c-gorilla/agent.sock
+```
+
+A `Host *` block placed at the top with a `User` in it wins over everything below
+it. Verify what SSH decided with `ssh -G <host> | grep '^user '`.
+
+
+---
+
+
+## One fingerprint per deploy — SSH unlock scopes (chip mode)
+
+SSH used to ask for your fingerprint on **every single signature**. One `fab deploy`, `git fetch`,
+or an Xcode/SourceTree sync fires dozens of them — so you got asked dozens of times.
+
+Now the first unlock opens a window where you choose how long the key stays ready:
+
+| Choice | What it means | It re-locks when |
+|---|---|---|
+| **Just once** | Fingerprint on every signature (the old behaviour) | — |
+| **This app** | One fingerprint for the app that asked | that app / terminal window quits |
+| **Until lock** *(default)* | One fingerprint for the whole session | the vault closes |
+| **⏱ N min** | Same, but with a hard time limit | whichever comes first |
+| **Ask pw** | Strictest: master password every time, nothing cached | — (Touch ID Macs only) |
+
+**The vault closes** when the screen locks, you log out, the lid closes / the Mac sleeps, or you
+reboot. Everything cached is wiped at that moment — keys are held in locked memory and zeroed,
+never written to disk.
+
+The window also tells you **which app is asking** (its name and icon), so you always know who
+wants SSH — SourceTree, Xcode, Sequel Ace, a terminal deploy, any open-source app that speaks to
+the agent. Type the password there and it unlocks your project secrets and 2FA codes too, so the
+terminal stops asking.
+
+Prefer the old behaviour permanently? Set `GORILLA_SSH_UNLOCK_SCOPE="once"` in your config. To
+always demand the master password instead of the fingerprint shortcut, set
+`GORILLA_SSH_ASK_PW_EACH_TIME="1"`.
+
+On Macs **without** Touch ID there is nothing to spam — the per-terminal session agent already
+holds your password for the session — so the window simply drops the fingerprint-only choices.
 
 ## KeePassXC GUI push (optional, chip mode)
 

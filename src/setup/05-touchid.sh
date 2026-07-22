@@ -1,6 +1,6 @@
 # 05-touchid.sh — detect Touch ID, build/sign touchid-gorilla + s3c-ssh-agent (chip mode),
 # then offer session-unlock (works in both modes).
-section "[5/10] Touch ID"
+section "[5/11] Touch ID"
 
 HAS_TOUCHID=false
 
@@ -32,7 +32,7 @@ if $TOUCHID_DETECTED; then
  success "Touch ID hardware detected"
  printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
  read -p "Enable Touch ID mode? [Y/n] " -n 1 -r
- echo ""
+ [[ -n "$REPLY" ]] && echo ""   # Enter already emits its own newline
  if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
  HAS_TOUCHID=true
  else
@@ -94,12 +94,8 @@ if $HAS_TOUCHID; then
  fi
  fi
 
- CODESIGN_ARGS=(--force --sign)
  if [[ -n "$SIGN_IDENTITY" ]]; then
- CODESIGN_ARGS+=("$SIGN_IDENTITY")
- [[ -f "$ENT_FILE" ]] && CODESIGN_ARGS+=(--entitlements "$ENT_FILE")
- CODESIGN_ARGS+=("$BUILD_BIN")
- if codesign "${CODESIGN_ARGS[@]}" &>/dev/null; then
+ if sign_binary "$BUILD_BIN" "$SIGN_IDENTITY" "$ENT_FILE"; then
  success "Signed with: $SIGN_IDENTITY"
  [[ -f "$ENT_FILE" ]] && item "Entitlements: $(basename "$ENT_FILE")"
  else
@@ -107,7 +103,7 @@ if $HAS_TOUCHID; then
  exit 1
  fi
  else
- codesign --force --sign - "$BUILD_BIN" 2>/dev/null
+ sign_binary "$BUILD_BIN"
  warn "Ad-hoc signed — Secure Enclave access may be unreliable"
  fi
 
@@ -117,7 +113,7 @@ if $HAS_TOUCHID; then
  # installed into /usr/local/bin/ gets SIGKILL'd at launch even though
  # `codesign --verify` still passes (xattrs aren't part of the signature).
  # Strip every xattr after install to get a clean, trusted binary.
- sudo install -m 0755 -o root -g wheel "$BUILD_BIN" "$BIN_DIR/touchid-gorilla"
+ sudo install -m 0555 -o root -g wheel "$BUILD_BIN" "$BIN_DIR/touchid-gorilla"
  sudo xattr -cr "$BIN_DIR/touchid-gorilla"
  success "touchid-gorilla → $BIN_DIR/touchid-gorilla"
 
@@ -133,21 +129,33 @@ if $HAS_TOUCHID; then
  cp "$SRC_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-wire.swift"   # shared wire helpers (#13)
  cp "$SRC_DIR/ssh-rsa.swift" "$BUILD_DIR/ssh-rsa.swift"     # shared RSA signing (#RSA)
  swiftc "$AGENT_SRC" "$BUILD_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-rsa.swift" -o "$AGENT_BIN" $(swift_frameworks s3c-ssh-agent)
- AGENT_CODESIGN=(--force --sign)
  if [[ -n "$SIGN_IDENTITY" ]]; then
- AGENT_CODESIGN+=("$SIGN_IDENTITY" "$AGENT_BIN")
- if codesign "${AGENT_CODESIGN[@]}" &>/dev/null; then
+ if sign_binary "$AGENT_BIN" "$SIGN_IDENTITY"; then
  success "Signed s3c-ssh-agent with: $SIGN_IDENTITY"
  else
  warn "codesign s3c-ssh-agent failed — falling back to ad-hoc"
- codesign --force --sign - "$AGENT_BIN" 2>/dev/null
+ sign_binary "$AGENT_BIN"
  fi
  else
- codesign --force --sign - "$AGENT_BIN" 2>/dev/null
+ sign_binary "$AGENT_BIN"
  fi
- sudo install -m 0755 -o root -g wheel "$AGENT_BIN" "$BIN_DIR/s3c-ssh-agent"
+ sudo install -m 0555 -o root -g wheel "$AGENT_BIN" "$BIN_DIR/s3c-ssh-agent"
  sudo xattr -cr "$BIN_DIR/s3c-ssh-agent"
  success "s3c-ssh-agent → $BIN_DIR/s3c-ssh-agent"
+
+ # #43 L3: pin the agent's cdhash so the running agent can detect a swapped binary. Computed by
+ # the agent itself (--cdhash) → the pin format always matches its own self-check. Written here,
+ # BEFORE the LaunchAgent is bootstrapped in step 10, and overwritten every install so it rotates
+ # in lockstep with the freshly-signed binary. Empty output (platform won't surface cdhashes) →
+ # no pin written → agent runs unverified (never a brick).
+ AGENT_CDHASH="$("$BIN_DIR/s3c-ssh-agent" --cdhash 2>/dev/null)"
+ if [[ -n "$AGENT_CDHASH" ]]; then
+ printf '%s\n' "$AGENT_CDHASH" | sudo tee "$SHARE_DIR/agent.cdhash" >/dev/null
+ sudo chown root:wheel "$SHARE_DIR/agent.cdhash"; sudo chmod 0644 "$SHARE_DIR/agent.cdhash"
+ success "Pinned agent cdhash → $SHARE_DIR/agent.cdhash"
+ else
+ warn "Could not read agent cdhash — integrity pin not written (agent runs unverified)"
+ fi
 else
  if ! $TOUCHID_DETECTED; then
  info "No Touch ID detected (desktop Mac without Touch ID keyboard)"
@@ -156,30 +164,23 @@ else
 fi
 
 # ----------------------------------------------------------
-# Session-unlock opt-in (works in BOTH modes; held by s3c-session-agent)
+# Session-unlock — a NO-CHIP feature: hold the master pw per-terminal-tab so env/otp stop
+# re-prompting within a tab. Chip Macs IGNORE it (the fan-out blob cache already gives one master
+# pw per boot + Touch ID in every terminal), so we don't even offer it there — enabling it would
+# only make new windows re-prompt. Always persisted so a re-install can't leave a stale 'true'.
 # ----------------------------------------------------------
-item ""
-item "Session-unlock — hold the master password in a memory-only, per-terminal"
-item "agent so env/otp/ssh stop re-prompting within the same tab. Obfuscated +"
-item "mlock'd, never on disk; wiped on TTL / logout / screen-lock / reboot."
 SESSION_UNLOCK=false
-if $HAS_TOUCHID; then
- item "On a Touch ID machine this BYPASSES the per-decrypt fingerprint gate — opt-in."
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Keep unlocked for the current terminal session? [y/N] " REPLY
- [[ $REPLY =~ ^[Yy]$ ]] && SESSION_UNLOCK=true
-else
+if ! $HAS_TOUCHID; then
+ item ""
+ item "Session-unlock — hold the master password in a memory-only, per-terminal"
+ item "agent so env/otp stop re-prompting within the same tab. Obfuscated +"
+ item "mlock'd, never on disk; wiped on TTL / logout / screen-lock / reboot."
  printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
  read -rp "Keep unlocked for the current terminal session? [Y/n] " REPLY
  [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]] && SESSION_UNLOCK=true
 fi
-# Persist GORILLA_SESSION_UNLOCK (true/false) into the user config (idempotent).
-if [[ -f "$CONFIG_FILE" ]]; then
- if grep -q '^GORILLA_SESSION_UNLOCK=' "$CONFIG_FILE"; then
- sed -i '' "s/^GORILLA_SESSION_UNLOCK=.*/GORILLA_SESSION_UNLOCK=\"$SESSION_UNLOCK\"/" "$CONFIG_FILE"
- else
- echo "GORILLA_SESSION_UNLOCK=\"$SESSION_UNLOCK\"" >> "$CONFIG_FILE"
- fi
-fi
-if $SESSION_UNLOCK; then success "Session-unlock: ON"; else skip "Session-unlock: off (tools always prompt)"; fi
+set_config GORILLA_SESSION_UNLOCK "$SESSION_UNLOCK"
+if $HAS_TOUCHID; then skip "Session-unlock: off (chip mode uses the per-sign Touch ID gate)"
+elif $SESSION_UNLOCK; then success "Session-unlock: ON"
+else skip "Session-unlock: off (tools always prompt)"; fi
 true

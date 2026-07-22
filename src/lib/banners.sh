@@ -37,16 +37,26 @@ command -v ask_master_pw >/dev/null 2>&1 || ask_master_pw() {
 # tab. Otherwise (or if the agent isn't installed) it just prompts via
 # ask_master_pw (defined by the calling tool). $PPID = the interactive shell, so
 # the agent dies when the tab closes.
+# Session-unlock is a NO-CHIP feature: it holds the master pw per-terminal-tab. On a chip (Touch
+# ID) Mac the fan-out blob cache ALREADY gives "one master pw per boot, then Touch ID in every
+# terminal" — a per-tty holder there would only make each new window re-prompt. So chip mode
+# ignores GORILLA_SESSION_UNLOCK entirely, no matter what the config says.
+_session_unlock_on() {
+    [[ "$GORILLA_SESSION_UNLOCK" == "true" ]] || return 1
+    command -v have_chip >/dev/null 2>&1 && have_chip && return 1   # chip → never per-tty
+    return 0
+}
+
 get_master_pw() {
     local pw tty
     tty=$(tty 2>/dev/null || echo no-tty)
-    if [[ "$GORILLA_SESSION_UNLOCK" == "true" && -x "$GORILLA_SESSION_AGENT" ]]; then
+    if _session_unlock_on && [[ -x "$GORILLA_SESSION_AGENT" ]]; then
         if pw=$("$GORILLA_SESSION_AGENT" get "$tty" 2>/dev/null) && [[ -n "$pw" ]]; then
             printf '%s' "$pw"; return 0
         fi
     fi
     pw=$(ask_master_pw)
-    if [[ "$GORILLA_SESSION_UNLOCK" == "true" && -x "$GORILLA_SESSION_AGENT" && -n "$pw" ]]; then
+    if _session_unlock_on && [[ -x "$GORILLA_SESSION_AGENT" && -n "$pw" ]]; then
         printf '%s' "$pw" | "$GORILLA_SESSION_AGENT" start "$tty" "$PPID" 2>/dev/null
     fi
     printf '%s' "$pw"
@@ -71,15 +81,17 @@ _boot_epoch() {
     awk '/^btime/{print $2}' /proc/stat 2>/dev/null
 }
 
-# _blob_fresh <path> — true iff the file exists AND was created after the last boot. A stale
-# (pre-boot) blob is treated as absent so /tmp secrets can't survive a reboot.
+# _blob_fresh <path> — true iff the file exists, was created after the last boot, AND is younger
+# than the idle TTL. A stale blob (pre-boot OR idle past GORILLA_BLOB_TTL, default 7200s) is
+# treated as absent so /tmp secrets can't survive a reboot or sit cached forever.
 _blob_fresh() {
-    local f="$1" mtime boot
+    local f="$1" mtime boot now ttl="${GORILLA_BLOB_TTL:-7200}"
     [[ -e "$f" ]] || return 1
     boot=$(_boot_epoch); [[ -n "$boot" ]] || return 0      # can't determine → don't falsely reject
     mtime=$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null)   # GNU first, then BSD/macOS
     [[ -n "$mtime" ]] || return 0
-    (( mtime >= boot ))
+    now=$(date +%s)
+    (( mtime >= boot )) && (( now - mtime < ttl ))         # post-boot AND within the idle TTL
 }
 
 # _safe_name <name> — true if the name round-trips as a blob filename component (no spaces,
@@ -99,6 +111,7 @@ fan_out_all() {
     (
         flock -n 9 || exit 0
         _blob_fresh "$GORILLA_SENTINEL" && exit 0          # lost the race; someone fanned out
+        mkdir -p "$GORILLA_BLOB_DIR" 2>/dev/null; chmod 700 "$GORILLA_BLOB_DIR" 2>/dev/null   # #28: re-create if a concurrent wipe removed it
         local svc data n=0
         # FAST PATH (#X): one keepassxc export → parse → wrap every (uncompressed) secret in a
         # single Argon2 unlock instead of N. The per-secret loops below then skip whatever this
@@ -141,6 +154,17 @@ fan_out_all() {
         fi
     ) 9>"$GORILLA_BLOB_DIR/.fanout.lock"
     return 0
+}
+
+# fanout_wait — block up to 30s for an in-progress fan-out to finish, so a tool that needs a blob
+# doesn't race past a running producer into a redundant Argon2 unlock (#19). Distinct from
+# fan_out_all's non-blocking producer lock. Returns 0 when the lock is free (fan-out done or none
+# running), 1 + a clear message on timeout. flock -w auto-releases if the holder dies, so a crashed
+# producer can't wedge waiters past its own death.
+fanout_wait() {
+    local lock="$GORILLA_BLOB_DIR/.fanout.lock"
+    [[ -e "$lock" ]] || return 0
+    ( flock -w 30 9 || { echo "s3c-gorilla: bootstrap lock stuck (>30s) — proceeding without waiting" >&2; exit 1; } ) 9>"$lock"
 }
 
 # _paranoid_wipe — drop EVERY cached blob (env/otp/ssh) + the fan-out sentinel so a prior

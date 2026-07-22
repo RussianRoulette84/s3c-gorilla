@@ -22,11 +22,16 @@ GORILLA_CONFIG="$HOME/.config/s3c-gorilla/config"
 
 : "${GORILLA_DB:=$HOME/Library/Mobile Documents/com~apple~CloudDocs/gorilla_tunnel.dat.kdbx}"
 : "${GORILLA_ENV_GROUP:=ENV}"
+: "${GORILLA_SSH_GROUP:=SSH}"
 : "${GORILLA_TOUCHID:=/usr/local/bin/touchid-gorilla}"
 : "${GORILLA_BANNERS:=/usr/local/share/s3c-gorilla/banners.sh}"
 [[ -r "$GORILLA_BANNERS" ]] && source "$GORILLA_BANNERS"
 # Fallback when banners.sh is absent: session-unlock degrades to a plain prompt.
 command -v get_master_pw >/dev/null || get_master_pw() { ask_master_pw; }
+
+# Optional Infisical bridge (push/pull/sync) — sourced only when installed.
+: "${GORILLA_INFISICAL_LIB:=/usr/local/share/s3c-gorilla/s3c-infisical.sh}"
+[[ -r "$GORILLA_INFISICAL_LIB" ]] && source "$GORILLA_INFISICAL_LIB"
 
 # --paranoid (CP3): extract the one requested secret, use it, and NEVER cache a /tmp blob or
 # fan out. Master pw every run; nothing reusable left behind. Off by default.
@@ -78,6 +83,22 @@ kdbx_extract_env() {
         "$GORILLA_DB" "$GORILLA_ENV_GROUP/$project" .env --stdout -q 2>/dev/null
 }
 
+# Root for extracted non-secret attachments (boot-scoped, same /tmp lifecycle as the blobs).
+ATTACH_ROOT="${GORILLA_BLOB_DIR:-/tmp/s3c-gorilla}"
+
+# Pull the project's host ssh-config (attachment `config` on SSH/<project>-ssh-config) → a file
+# under $ATTACH_ROOT/<project>/config. This is NON-secret (hostnames/users only, no keys), so a
+# file is fine; keys stay base64 in the .env. Rides the caller's already-unlocked master pw, so no
+# extra Touch ID. Silent no-op when the entry/attachment is absent (most projects have none).
+extract_ssh_config() {
+    local pw="$1" project="$2" out
+    out=$(echo "$pw" | keepassxc-cli attachment-export \
+        "$GORILLA_DB" "$GORILLA_SSH_GROUP/${project}-ssh-config" config --stdout -q 2>/dev/null)
+    [[ -n "$out" ]] || return 0
+    mkdir -p "$ATTACH_ROOT/$project" && chmod 700 "$ATTACH_ROOT/$project"
+    printf '%s' "$out" > "$ATTACH_ROOT/$project/config" && chmod 600 "$ATTACH_ROOT/$project/config"
+}
+
 unwrap_blob() {
     local key="$1" out
     command -v show_touchid &>/dev/null && show_touchid   # bishop walk in background
@@ -99,7 +120,10 @@ bootstrap_and_get() {
     local pw="" merged="" env_data proj missing=()
     local use_session=false
 
-    if [[ "$GORILLA_SESSION_UNLOCK" == "true" ]] && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
+    # Chip mode ignores session-unlock (see _session_unlock_on in banners.sh) — the blob cache is
+    # the mechanism there. Only the no-chip path uses the per-tty session agent.
+    if command -v _session_unlock_on >/dev/null 2>&1 && _session_unlock_on \
+        && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
         use_session=true
     fi
 
@@ -135,6 +159,15 @@ bootstrap_and_get() {
         return 1
     fi
 
+    # Ride the same unlock: extract each project's host ssh-config attachment to /tmp so the
+    # container can adopt it (see extract_ssh_config). Only when we actually hold the master pw —
+    # in no-chip session mode the pw stays inside the agent and configs are skipped.
+    if [[ -n "$pw" ]]; then
+        while IFS= read -r proj <&3; do
+            extract_ssh_config "$pw" "$proj"
+        done 3< <(iter_project_list "$project_list")
+    fi
+
     if have_chip && ! $PARANOID; then
         if ! printf '%s' "$merged" | "$GORILLA_TOUCHID" wrap "env-$key" &>/dev/null; then
             echo "env-gorilla: failed to chip-wrap env blob" >&2
@@ -163,6 +196,10 @@ get_env() {
         return
     fi
 
+    # If a sibling tool's fan-out is mid-flight, wait briefly so we read its blob instead of
+    # racing past it into a redundant kdbx unlock (#19). No-op when nothing is fanning out.
+    command -v fanout_wait >/dev/null 2>&1 && fanout_wait
+
     local blob_path="/tmp/s3c-gorilla/env-$key.blob"
     local env_data
 
@@ -177,6 +214,107 @@ get_env() {
         echo "env-gorilla: Touch ID cancelled or blob corrupted — re-bootstrapping" >&2
     fi
     bootstrap_and_get "$project_list" "$key"
+}
+
+# ----------------------------------------------------------
+# Vault writes: set / append / unset / edit  (comment + order preserving)
+# ----------------------------------------------------------
+
+# Drop every cached blob that includes this project (single "env-p.blob" or combined
+# "env-a+b+c.blob"), so the next read re-extracts the fresh .env. Mode-agnostic.
+_bust_env_blob() {
+    local proj="$1" f base
+    shopt -s nullglob
+    for f in /tmp/s3c-gorilla/env-*.blob; do
+        base=$(basename "$f" .blob); base="${base#env-}"
+        case "+$base+" in *"+$proj+"*) trash "$f" 2>/dev/null || mv "$f" "$f.removed" 2>/dev/null ;; esac
+    done
+}
+
+# Prompt master pw once (global $MASTER_PW) + export the current .env to a fresh 0600 temp
+# (global $ENV_TMP), newline-terminated. Empty file when the entry/attachment doesn't exist yet.
+# NOTE: called directly (not in $()) so the globals survive in the caller's shell.
+_env_load_tmp() {
+    local proj="$1" cur
+    MASTER_PW=$(get_master_pw); [[ -n "$MASTER_PW" ]] || { echo "env-gorilla: no password entered" >&2; return 1; }
+    cur=$(kdbx_extract_env "$MASTER_PW" "$proj")
+    ENV_TMP=$(mktemp); chmod 600 "$ENV_TMP"; printf '%s' "$cur" > "$ENV_TMP"
+    [[ -s "$ENV_TMP" && -n "$(tail -c1 "$ENV_TMP")" ]] && printf '\n' >> "$ENV_TMP"
+}
+
+# Import $2 as ENV/<proj>/.env (create group+entry if needed), then bust the blob cache.
+# Requires $MASTER_PW. keepassxc-cli reads the master pw on stdin — the secret never hits argv.
+_env_write() {
+    local proj="$1" src="$2"
+    printf '%s\n' "$MASTER_PW" | keepassxc-cli mkdir "$GORILLA_DB" "$GORILLA_ENV_GROUP" -q &>/dev/null || true
+    printf '%s\n' "$MASTER_PW" | keepassxc-cli add "$GORILLA_DB" "$GORILLA_ENV_GROUP/$proj" -q &>/dev/null || true
+    if ! printf '%s\n' "$MASTER_PW" | keepassxc-cli attachment-import "$GORILLA_DB" "$GORILLA_ENV_GROUP/$proj" .env "$src" -q -f &>/dev/null; then
+        echo "env-gorilla: failed to write $GORILLA_ENV_GROUP/$proj/.env" >&2
+        return 1
+    fi
+    _bust_env_blob "$proj"
+}
+
+_env_cleanup_tmp() { [[ -n "${ENV_TMP:-}" ]] && { trash "$ENV_TMP" 2>/dev/null || mv "$ENV_TMP" "$ENV_TMP.removed" 2>/dev/null; }; unset ENV_TMP MASTER_PW; }
+
+cmd_set() {
+    local proj="$1" push=false; shift || true
+    local -a kvs=(); local a
+    for a in "$@"; do case "$a" in --push) push=true ;; infisical) : ;; *) kvs+=("$a") ;; esac; done
+    [[ -n "$proj" && ${#kvs[@]} -ge 1 ]] || { echo "usage: env-gorilla set <project> KEY=VAL [KEY2=VAL2 ...] [--push]" >&2; return 2; }
+    _env_load_tmp "$proj" || return 1
+    local kv key
+    for kv in "${kvs[@]}"; do
+        key="${kv%%=*}"
+        [[ "$kv" == *=* && -n "$key" ]] || { echo "env-gorilla: skipping '$kv' (not KEY=VAL)" >&2; continue; }
+        if grep -q "^$key=" "$ENV_TMP" 2>/dev/null; then      # upsert: replace the KEY= line in place
+            awk -v k="$key" -v repl="$kv" 'BEGIN{FS="="} ($1==k && index($0,"=")>0){print repl; next} {print}' "$ENV_TMP" > "$ENV_TMP.n" && mv "$ENV_TMP.n" "$ENV_TMP"
+        else
+            printf '%s\n' "$kv" >> "$ENV_TMP"
+        fi
+    done
+    _env_write "$proj" "$ENV_TMP" && echo "env-gorilla: updated $GORILLA_ENV_GROUP/$proj" >&2
+    $push && command -v cmd_infisical >/dev/null 2>&1 && cmd_infisical push "$proj"
+    _env_cleanup_tmp
+}
+
+cmd_append() {
+    local proj="$1"
+    [[ -n "$proj" ]] || { echo "usage: env-gorilla append <project>   (reads a text blob from stdin)" >&2; return 2; }
+    local blob; blob=$(cat)
+    [[ -n "$blob" ]] || { echo "env-gorilla: nothing on stdin" >&2; return 2; }
+    _env_load_tmp "$proj" || return 1
+    printf '%s\n' "$blob" >> "$ENV_TMP"                        # verbatim — preserves # comment blocks
+    _env_write "$proj" "$ENV_TMP" && echo "env-gorilla: appended to $GORILLA_ENV_GROUP/$proj" >&2
+    _env_cleanup_tmp
+}
+
+cmd_unset() {
+    local proj="$1"; shift || true
+    [[ -n "$proj" && $# -ge 1 ]] || { echo "usage: env-gorilla unset <project> KEY [KEY2 ...]" >&2; return 2; }
+    _env_load_tmp "$proj" || return 1
+    local key
+    for key in "$@"; do
+        awk -v k="$key" 'BEGIN{FS="="} !($1==k && index($0,"=")>0)' "$ENV_TMP" > "$ENV_TMP.n" && mv "$ENV_TMP.n" "$ENV_TMP"
+    done
+    _env_write "$proj" "$ENV_TMP" && echo "env-gorilla: removed $* from $GORILLA_ENV_GROUP/$proj" >&2
+    _env_cleanup_tmp
+}
+
+cmd_edit() {
+    local proj="$1"
+    [[ -n "$proj" ]] || { echo "usage: env-gorilla edit <project>" >&2; return 2; }
+    _env_load_tmp "$proj" || return 1
+    local before after
+    before=$(shasum "$ENV_TMP" 2>/dev/null | awk '{print $1}')
+    "${EDITOR:-vi}" "$ENV_TMP"
+    after=$(shasum "$ENV_TMP" 2>/dev/null | awk '{print $1}')
+    if [[ "$before" == "$after" ]]; then
+        echo "env-gorilla: no changes — $proj left as-is" >&2
+    else
+        _env_write "$proj" "$ENV_TMP" && echo "env-gorilla: saved $GORILLA_ENV_GROUP/$proj" >&2
+    fi
+    _env_cleanup_tmp
 }
 
 # ----------------------------------------------------------
@@ -220,6 +358,18 @@ if [[ "$1" == "--clear" ]]; then
     exit 0
 fi
 
+# Vault-write + Infisical subcommands (must run before the "<project> -- <cmd>" syntax check).
+case "${1:-}" in
+    set)    shift; cmd_set    "$@"; exit $? ;;
+    append) shift; cmd_append "$@"; exit $? ;;
+    unset)  shift; cmd_unset  "$@"; exit $? ;;
+    edit)   shift; cmd_edit   "$@"; exit $? ;;
+    push|pull|sync)
+        op="$1"; shift
+        if command -v cmd_infisical >/dev/null 2>&1; then cmd_infisical "$op" "$@"; exit $?
+        else echo "env-gorilla: Infisical bridge not installed (re-run install.sh and enable Infisical)" >&2; exit 1; fi ;;
+esac
+
 if [[ $# -lt 3 || "$*" != *" -- "* ]]; then
     cat << 'EOF'
 env-gorilla — secrets from the vault, not from the disk
@@ -228,12 +378,20 @@ Usage:
   env-gorilla <project> -- <command>
   env-gorilla <p1>,<p2>,<p3> -- <command>     Merge multiple .envs into ONE blob
   env-gorilla --list                           Show available projects
-  env-gorilla --clear                          Wipe all env blobs from /tmp
-  env-gorilla --clear <p1[,p2,...]>            Wipe one (combined) blob
+  env-gorilla --clear [<p1[,p2,...]>]          Wipe all / one env blob from /tmp
+
+Edit secrets (no GUI):
+  env-gorilla set <project> KEY=VAL [KEY2=VAL2 ...] [--push]   upsert key(s)
+  env-gorilla append <project>                 append a text blob from stdin (keeps # comments)
+  env-gorilla unset <project> KEY [KEY2 ...]   remove key(s)
+  env-gorilla edit <project>                   open the .env in \$EDITOR
+  env-gorilla push|pull|sync <project> [--force-infisical]     Infisical sync
 
 Examples:
   env-gorilla project_x -- python main.py
   env-gorilla llm-docker,slav-ai -- bash       # one master pw → one Touch ID for both
+  env-gorilla set slav-ai SENTRY_TOKEN=xxxx --push
+  pbpaste | env-gorilla append slav-ai         # paste a whole # commented block
 EOF
     exit 1
 fi
@@ -264,6 +422,12 @@ while IFS= read -r line; do
     export "$line"
 done <<< "$ENV_DATA"
 unset ENV_DATA
+
+# Point the child at this session's extracted-attachment dir (host ssh-config lives here as
+# `config`). Primary = first project in the list. The container entrypoint reads it, e.g.
+# `cp "$S3C_ATTACHMENT_DIR/config" /root/.ssh/config`.
+S3C_PRIMARY="$(iter_project_list "$PROJECT" | head -1)"
+export S3C_ATTACHMENT_DIR="$ATTACH_ROOT/$S3C_PRIMARY"
 
 echo "env-gorilla: loaded — launching: $*" >&2
 exec "$@"

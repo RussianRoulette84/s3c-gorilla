@@ -1,5 +1,5 @@
 # 01-keepassxc.sh — ensure KeePassXC is installed (app first, then report the DB it'll use).
-section "[1/10] KeePassXC"
+section "[1/11] KeePassXC"
 
 # Check the app/CLI BEFORE the DB — no point reporting a DB path for a vault tool that
 # isn't installed yet.

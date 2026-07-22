@@ -23,7 +23,8 @@ You type your KeePass master password once per session either way.
 | `otp-gorilla` | TOTP code viewer + clipboard copy (computed locally). |
 | `ssh-gorilla.sh` | `ssh` wrapper with hostname shortcuts; points SSH at our agent. |
 | `touchid-gorilla` | Secure Enclave primitive: wrap/unwrap, SE-born SSH keys, local TOTP, secure prompt. **Chip mode only** (not installed without an SE). |
-| `s3c-ssh-agent` | SSH signing agent (LaunchAgent): `chip-wrap` / `se-born` / `password` modes + KeePassXC GUI push. |
+| `s3c-ssh-agent` | SSH signing agent (LaunchAgent): `chip-wrap` / `se-born` / `password` modes + KeePassXC GUI push + the scope-gated warm-key cache. |
+| `s3c-unlock-window` | The native unlock panel the agent opens on a cold unlock: master password, how long to stay unlocked, and which app is asking. **Chip mode only.** |
 | `s3c-session-agent` | Per-tab master-password holder for password mode (type it once per terminal). |
 
 All live in `/usr/local/bin/`, root-owned, mode `0755`.
@@ -47,9 +48,37 @@ All live in `/usr/local/bin/`, root-owned, mode `0755`.
    written to disk.
 3. **Every later tool call = one Touch ID.** Each tool unwraps only
    the one blob it needs.
-4. **Sessions expire.** Cached blobs are trusted only if newer than
+4. **SSH is the exception — it would otherwise ask on every signature.**
+   One `git fetch` or `fab deploy` produces dozens of signatures, so the
+   agent keeps the unwrapped key warm for a scope you choose in the
+   unlock window (see below). A whole deploy then costs one fingerprint.
+5. **Sessions expire.** Cached blobs are trusted only if newer than
    the last boot; reboot / logout / 2h idle all force a fresh master
    password prompt.
+
+### The SSH unlock window (chip mode)
+
+The first signature after a cold vault opens `s3c-unlock-window`: a panel
+showing **which app is asking** (name + icon, resolved by walking from the
+short-lived `ssh` process up to the app macOS launched), a master-password
+field, and a switch for how long the key stays ready:
+
+| Choice | Key stays ready | Re-locks when |
+|---|---|---|
+| `once` | not cached | — (fingerprint every signature) |
+| `app` | while the requesting app lives | that app / terminal window quits |
+| `session` *(default)* | whole session | vault closes |
+| `⏱ N min` | session, time-capped | vault closes **or** N minutes |
+| `Ask pw` | not cached | — (master password each unlock; Touch ID Macs only) |
+
+**Vault closes** = screen lock, logout, sleep / lid close, or reboot. Cached
+keys live in `mlock`'d memory and are zeroed on every one of those events.
+
+The password typed here also runs the normal fan-out (via
+`s3c-gorilla _fanout`), so env/otp stop asking too. If the window binary is
+missing the agent falls back to a plain system password prompt; if the window
+never returns (no display, wrong Space) a 3-minute watchdog kills it so `ssh`
+fails instead of hanging.
 
 ### Password mode (no chip)
 
@@ -70,6 +99,12 @@ s3c-gorilla status                  # mode, active per-tty sessions, binaries, v
 s3c-gorilla doctor                  # health check — deps, codesign, config, agent logs, mode
 s3c-gorilla wipe                    # kill all sessions (chip: wrap-clear + restart agent)
 s3c-gorilla lock                    # end THIS terminal's session only
+
+s3c-gorilla backup                  # dated copy of the kdbx → ~/.s3c-gorilla/backups/
+
+s3c-gorilla ssh-config show         # diff the vault's ~/.ssh/config against the one on disk
+s3c-gorilla ssh-config edit         # edit the vault copy in $EDITOR, save straight back
+s3c-gorilla ssh-config install      # write the vault copy to ~/.ssh/config (backs up first)
 
 s3c-gorilla list ssh                # names of SSH keys currently loaded
 s3c-gorilla list env                # names of .env projects
@@ -116,6 +151,32 @@ otp-gorilla --paranoid <service>   # no cache; master pw this run only
 Prints the code, copies it to the clipboard, fires a macOS
 notification.
 
+### Your `~/.ssh/config` in the vault
+
+Store it as attachment `config` on entry `SSH/ssh-config` and it follows you between Macs.
+`s3c-gorilla ssh-config edit` changes the vault copy; `install` writes it to disk with a
+timestamped backup. (Per-project container configs are separate — see `SSH/<project>-ssh-config`.)
+
+**Which user SSH connects as** comes from this file, not from us — the wrapper does not rewrite
+usernames. SSH keeps the **first** value it finds, so order matters:
+
+```
+Host github.com          # specific blocks FIRST
+    User git
+
+Host *                   # catch-all LAST
+    User root
+    IdentityAgent ~/.s3c-gorilla/agent.sock
+```
+
+Put `Host *` at the top with a `User` in it and it wins over everything below — silently
+connecting to GitHub as the wrong user. Check what SSH actually decided with
+`ssh -G <host> | grep '^user '`.
+
+Connection sharing (`ControlMaster`/`ControlPersist`) is worth scoping to hosts that benefit —
+on a host whose login shell starts a full-screen program, a shared master can wedge later
+sessions.
+
 ### ssh-gorilla.sh (wrapper)
 ```
 ssh <host>                         # normal ssh; our agent handles auth
@@ -151,6 +212,8 @@ won't overwrite it).
 | `GORILLA_SSH_MODE` | `chip-wrap` | `chip-wrap` (keep existing key) or `se-born` (chip-generated). Set only on Touch ID machines. |
 | `GORILLA_SESSION_UNLOCK` | `false` | Hold the master password in a per-tab memory agent so env/otp/ssh stop re-prompting. Defaults OFF; on Touch ID machines it bypasses the per-decrypt fingerprint gate. |
 | `GORILLA_UNLOCK_TTL` | `7200` | Seconds the session agent holds the password before it self-expires (activity resets it). |
+| `GORILLA_SSH_UNLOCK_SCOPE` | `session` | How long a warm SSH key survives when the unlock window wasn't shown (a terminal tool opened the vault first): `once`, `app`, or `session`. |
+| `GORILLA_SSH_ASK_PW_EACH_TIME` | `0` | Chip mode: demand the master password on every re-unlock instead of the Touch ID shortcut. Also selectable per-unlock in the window. |
 | `GORILLA_SCAN_ROOTS` | `~/Projects:~/Code:~/Workspaces:~/src` | Extra colon-separated roots for `s3c-gorilla scan`. |
 | `GORILLA_PARANOID` | `false` | Global paranoid mode — never cache or fan out; extract the one requested secret and discard. |
 
@@ -166,13 +229,19 @@ won't overwrite it).
 ├── ssh-gorilla.sh
 ├── touchid-gorilla                    (chip machines only)
 ├── s3c-ssh-agent
+├── s3c-unlock-window                  (chip machines only — the unlock panel)
 ├── s3c-session-agent
 └── s3c-kdbx-parse                     (XML fan-out fast path)
 
 /usr/local/share/s3c-gorilla/
 ├── banners.sh, godfather.sh, …        (sourced helper libs)
 ├── s3c-scan.sh, s3c-keychain.sh       (scan + keychain logic)
+├── icon.png                           (shown + glowing in the unlock window)
+├── sounds/                            (unlock window: D'oh / Woohoo)
+├── agent.cdhash                       (pinned agent fingerprint — tamper check)
 └── install-source                     (path the installer was run from)
+
+~/Library/LaunchAgents/com.slav-it.s3c-ssh-agent.plist   (chip mode — starts the agent at login)
 
 ~/.config/s3c-gorilla/config           (your local overrides)
 
@@ -250,6 +319,36 @@ password and rebuilds the blobs:
 
 ```bash
 s3c-gorilla wipe
+```
+
+### `ssh` fails / no `~/.s3c-gorilla/agent.sock` (chip mode)
+
+The LaunchAgent isn't registered — installing the plist is not the same as
+registering it with `launchd`. Check and fix:
+
+```bash
+launchctl print gui/$UID/com.slav-it.s3c-ssh-agent      # nothing? not registered
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.slav-it.s3c-ssh-agent.plist
+launchctl kickstart -k gui/$UID/com.slav-it.s3c-ssh-agent
+tail -20 /tmp/s3c-ssh-agent.err.log
+```
+
+If the agent starts and immediately exits with code 91/92/93, its pinned
+fingerprint no longer matches the binary (you rebuilt it by hand). Re-pin:
+
+```bash
+/usr/local/bin/s3c-ssh-agent --cdhash | sudo tee /usr/local/share/s3c-gorilla/agent.cdhash
+launchctl kickstart -k gui/$UID/com.slav-it.s3c-ssh-agent
+```
+
+### `ssh` hangs on the first connection
+
+The unlock window opened somewhere you can't see it (another Space, behind a
+fullscreen app). It now forces itself to the front, and a 3-minute watchdog
+kills a window that never answers. Check whether it's waiting:
+
+```bash
+pgrep -fl s3c-unlock-window
 ```
 
 ### KeePassXC kdbx not found / evicted

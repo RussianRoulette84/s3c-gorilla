@@ -37,6 +37,18 @@ done
         echo "--- swift-linter on src/ ---"
         "$HERE/linters/swift-linter.sh" "$ROOT/src"
         rc_lint=$?
+
+        echo
+        echo "--- src/setup step-file naming (#35) ---"
+        bad=$(find "$ROOT/src/setup" -maxdepth 1 -name '*.sh' -exec basename {} \; \
+              | grep -E '^[0-9]' | grep -Ev '^[0-9]{2}-' || true)
+        if [[ -n "$bad" ]]; then
+            echo "  FAIL  step files must use a two-digit zero-padded prefix (NN-...):"
+            printf '%s\n' "$bad" | sed 's/^/        /'
+            rc_lint=1
+        else
+            echo "  OK    all numbered step files are NN-prefixed"
+        fi
     fi
 
     if [[ "$MODE" == "all" || "$MODE" == "typecheck" ]]; then

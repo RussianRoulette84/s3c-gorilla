@@ -69,6 +69,10 @@ item "Where did your secrets go? Not onto your disk, that's for sure ;)"
 # earlier steps are already applied; the user fixes the issue and re-runs (#7).
 CURRENT_STEP="(startup)"
 trap 'rc=$?; [[ $rc -ne 0 ]] && printf "\n✗ install aborted during: %s (exit %s)\n  Earlier steps are done — fix the issue and re-run ./install.sh\n" "$CURRENT_STEP" "$rc" >&2' ERR
+# Plain glob = lexicographic order; the lint rule (#35) enforces two-digit zero-padded prefixes,
+# which makes lexicographic identical to numeric for 00–99. Deliberately a `for` loop: a
+# `while read … done < <(…)` would redirect stdin and swallow the steps' OWN `read` prompts
+# (config-keep / Touch ID mode / SSH mode) — do NOT reintroduce process substitution here.
 for step in "$SETUP_DIR"/[0-9][0-9]-*.sh; do
     [[ "$(basename "$step")" == "00-common.sh" ]] && continue
     CURRENT_STEP="$(basename "$step")"

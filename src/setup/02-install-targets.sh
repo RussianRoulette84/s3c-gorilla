@@ -1,8 +1,8 @@
 # 02-install-targets.sh — prime sudo (+ keepalive) and create the share dir.
-section "[2/10] Install targets"
+section "[2/11] Install targets"
 info "CLIs → $BIN_DIR   (s3c-gorilla, env-gorilla, otp-gorilla, ssh-gorilla.sh)"
-info "Agents → $BIN_DIR   (s3c-session-agent, s3c-kdbx-parse; + touchid-gorilla & s3c-ssh-agent on Touch ID Macs)"
-info "Helpers → $SHARE_DIR   (banners, godfather, scan + keychain libs)"
+info "Agents → $BIN_DIR   (s3c-session-agent, s3c-kdbx-parse; + touchid-gorilla, s3c-ssh-agent & s3c-unlock-window on Touch ID Macs)"
+info "Helpers → $SHARE_DIR   (banners, godfather, scan + keychain libs, app icon + unlock sounds)"
 info "Config → ~/.config/s3c-gorilla/config"
 info "Logs → ~/Library/Logs/s3c-gorilla/"
 

@@ -1,5 +1,5 @@
 # 03-user-config.sh — deploy user config (preserve if it already exists).
-section "[3/10] User config"
+section "[3/11] User config"
 mkdir -p "$CONFIG_DIR"
 if [[ -f "$CONFIG_FILE" ]]; then
  # A config already exists — keep the user's settings by default, but let them

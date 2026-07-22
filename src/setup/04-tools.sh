@@ -1,12 +1,12 @@
 # 04-tools.sh — install the shell CLIs + helper libs + compile s3c-session-agent.
-section "[4/10] Installing tools"
+section "[4/11] Installing tools"
 
 # CLIs → /usr/local/bin (owned by root, world-executable). Only ship the CLIs
 # that actually exist in src/ (a missing source under `set -e` would abort the
 # installer).
 for tool in env-gorilla otp-gorilla ssh-gorilla.sh s3c-gorilla; do
  if [[ -f "$SRC_DIR/$tool" ]]; then
- sudo install -m 0755 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
+ sudo install -m 0555 -o root -g wheel "$SRC_DIR/$tool" "$BIN_DIR/$tool"
  success "$tool → $BIN_DIR/$tool"
  else
  skip "$tool not in src/ — not installed"
@@ -23,12 +23,14 @@ sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/drunken-bishop.sh" "$
 sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/ywizz/colorize.sh" "$SHARE_DIR/colorize.sh"
 [[ -f "$SCRIPT_DIR/src/lib/s3c-scan.sh" ]] && sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/s3c-scan.sh" "$SHARE_DIR/s3c-scan.sh"
 [[ -f "$SCRIPT_DIR/src/lib/s3c-keychain.sh" ]] && sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/s3c-keychain.sh" "$SHARE_DIR/s3c-keychain.sh"
+[[ -f "$SCRIPT_DIR/src/lib/s3c-infisical.sh" ]] && sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/src/lib/s3c-infisical.sh" "$SHARE_DIR/s3c-infisical.sh"
 success "godfather.sh → $SHARE_DIR/godfather.sh"
 success "banners.sh → $SHARE_DIR/banners.sh"
 success "drunken-bishop.sh → $SHARE_DIR/drunken-bishop.sh"
 success "colorize.sh → $SHARE_DIR/colorize.sh"
 [[ -f "$SHARE_DIR/s3c-scan.sh" ]] && success "s3c-scan.sh → $SHARE_DIR/s3c-scan.sh"
 [[ -f "$SHARE_DIR/s3c-keychain.sh" ]] && success "s3c-keychain.sh → $SHARE_DIR/s3c-keychain.sh"
+[[ -f "$SHARE_DIR/s3c-infisical.sh" ]] && success "s3c-infisical.sh → $SHARE_DIR/s3c-infisical.sh"
 
 # s3c-session-agent — memory-only per-tty master-password holder for the optional
 # "keep unlocked for this terminal session" feature. No Secure Enclave needed, so
@@ -42,8 +44,8 @@ if command -v swiftc &>/dev/null; then
  cp "$SRC_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-wire.swift"               # shared wire helpers (#13)
  cp "$SRC_DIR/ssh-rsa.swift" "$BUILD_DIR/ssh-rsa.swift"                 # shared RSA signing (#RSA)
  if swiftc "$SESS_SRC" "$BUILD_DIR/ssh-agent-core.swift" "$BUILD_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-rsa.swift" $(swift_frameworks s3c-session-agent) -o "$SESS_BIN" 2>/dev/null; then
- codesign --force --sign - "$SESS_BIN" 2>/dev/null || true
- sudo install -m 0755 -o root -g wheel "$SESS_BIN" "$BIN_DIR/s3c-session-agent"
+ sign_binary "$SESS_BIN" || true
+ sudo install -m 0555 -o root -g wheel "$SESS_BIN" "$BIN_DIR/s3c-session-agent"
  sudo xattr -cr "$BIN_DIR/s3c-session-agent" 2>/dev/null || true
  success "s3c-session-agent → $BIN_DIR/s3c-session-agent"
  # Old agents are still running the PREVIOUS binary and squatting on per-tty sockets —
@@ -64,12 +66,40 @@ fi
 if command -v swiftc &>/dev/null && [[ -f "$SRC_DIR/s3c-kdbx-parse.swift" ]]; then
  KP_BIN="$BUILD_DIR/s3c-kdbx-parse"
  if swiftc "$SRC_DIR/s3c-kdbx-parse.swift" -o "$KP_BIN" 2>/dev/null; then
- codesign --force --sign - "$KP_BIN" 2>/dev/null || true
- sudo install -m 0755 -o root -g wheel "$KP_BIN" "$BIN_DIR/s3c-kdbx-parse"
+ sign_binary "$KP_BIN" || true
+ sudo install -m 0555 -o root -g wheel "$KP_BIN" "$BIN_DIR/s3c-kdbx-parse"
  sudo xattr -cr "$BIN_DIR/s3c-kdbx-parse" 2>/dev/null || true
  success "s3c-kdbx-parse → $BIN_DIR/s3c-kdbx-parse"
  else
  warn "s3c-kdbx-parse failed to compile — fan-out uses the per-secret path"
+ fi
+fi
+
+# App icon → share dir so the unlock window can load + glow it.
+if [[ -f "$SCRIPT_DIR/icon.png" ]]; then
+ sudo install -m 0644 -o root -g wheel "$SCRIPT_DIR/icon.png" "$SHARE_DIR/icon.png"
+ success "icon.png → $SHARE_DIR/icon.png"
+fi
+
+# Homer sounds → share dir (unlock window: D'oh on a wrong pw, Woohoo when you finally get in).
+if [[ -d "$SRC_DIR/sounds" ]]; then
+ sudo mkdir -p "$SHARE_DIR/sounds"
+ sudo install -m 0644 -o root -g wheel "$SRC_DIR"/sounds/*.mp3 "$SHARE_DIR/sounds/" 2>/dev/null \
+   && success "sounds → $SHARE_DIR/sounds/"
+fi
+
+# s3c-unlock-window — native AppKit vault-unlock window the SSH agent spawns on a cold unlock.
+# Optional: if it fails to build, the agent falls back to the plain osascript prompt.
+if command -v swiftc &>/dev/null && [[ -f "$SRC_DIR/s3c-unlock-window.swift" ]]; then
+ UW_BIN="$BUILD_DIR/s3c-unlock-window"
+ UW_SRCS=""; for _s in $(swift_sources s3c-unlock-window); do UW_SRCS="$UW_SRCS $SRC_DIR/$_s"; done
+ if swiftc $UW_SRCS $(swift_frameworks s3c-unlock-window) -o "$UW_BIN" 2>/dev/null; then
+ sign_binary "$UW_BIN" || true
+ sudo install -m 0555 -o root -g wheel "$UW_BIN" "$BIN_DIR/s3c-unlock-window"
+ sudo xattr -cr "$BIN_DIR/s3c-unlock-window" 2>/dev/null || true
+ success "s3c-unlock-window → $BIN_DIR/s3c-unlock-window"
+ else
+ warn "s3c-unlock-window failed to compile — SSH unlock falls back to the plain prompt"
  fi
 fi
 true

@@ -59,7 +59,8 @@ run_password_mode() {
     local arg="$1" pw="" services svc code matches=() q_lower s_lower use_agent=false
     # Prefer the session agent: it lists + computes TOTP itself, so the master pw
     # never enters this shell (B1). Fall back to the direct pw path otherwise.
-    if [[ "$GORILLA_SESSION_UNLOCK" == "true" ]] && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
+    if command -v _session_unlock_on >/dev/null 2>&1 && _session_unlock_on \
+        && command -v session_unlock >/dev/null 2>&1 && session_unlock; then
         use_agent=true
         services=$(session_list "$GORILLA_OTP_GROUP" 2>/dev/null | grep -v '/$')
     else
@@ -191,6 +192,7 @@ fuzzy_match() {
 show_one() {
     local svc="$1"
     local val code
+    command -v fanout_wait >/dev/null 2>&1 && fanout_wait   # don't race a mid-flight fan-out (#19)
     command -v show_touchid &>/dev/null && show_touchid   # bishop walk in background
     val=$("$GORILLA_TOUCHID" unwrap "otp-$svc" 2>/dev/null)
     command -v stop_touchid &>/dev/null && stop_touchid    # auto-stop on scan return

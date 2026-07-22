@@ -95,8 +95,22 @@ final class TwoPassParser: NSObject, XMLParserDelegate {
 }
 
 // --- main: stdin XML → TAB lines ---
-let xml = FileHandle.standardInput.readDataToEndOfFile()
+// No core dumps — we hold the entire decrypted vault XML in memory (#23).
+var coreLimit = rlimit(rlim_cur: 0, rlim_max: 0)
+setrlimit(RLIMIT_CORE, &coreLimit)
+
+// Hold the decrypted vault XML in a locked, zeroed buffer so it never reaches swap and is wiped
+// before exit (H1/#23). Best-effort mlock (a low RLIMIT_MEMLOCK just leaves it unlocked, never
+// aborts fan-out). XMLParser's two-pass walk may still copy substrings internally — this locks +
+// zeros the dominant buffer (the documented budget guard), not every transient.
+var xml = FileHandle.standardInput.readDataToEndOfFile()
 guard !xml.isEmpty else { exit(1) }
+xml.withUnsafeMutableBytes { raw in if let b = raw.baseAddress { mlock(b, raw.count) } }
+defer {
+    xml.withUnsafeMutableBytes { raw in
+        if let b = raw.baseAddress { memset(b, 0, raw.count); munlock(b, raw.count) }
+    }
+}
 let parser = TwoPassParser()
 parser.parse(pass: 1, data: xml)
 parser.parse(pass: 2, data: xml)

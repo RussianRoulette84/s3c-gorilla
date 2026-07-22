@@ -55,12 +55,25 @@ _import_ssh_keys() {
 
  echo "$GORILLA_PW" | keepassxc-cli mkdir "$DB_PATH" "SSH" -q &>/dev/null || true
 
- local BACKUP_DIR="$HOME/.ssh.bak-$(date +%Y%m%d-%H%M%S)"
+ # I-c: don't pile up timestamped backups on re-runs. If every selected key is already in the
+ # vault AND a prior backup exists, reuse it instead of copying ~/.ssh again.
+ local _already=1 _k _n _prev BACKUP_DIR
+ for _k in "${SELECTED[@]}"; do
+ _n=$(basename "$_k")
+ echo "$GORILLA_PW" | keepassxc-cli show "$DB_PATH" "SSH/$_n" -q &>/dev/null || { _already=0; break; }
+ done
+ _prev=$(ls -dt "$HOME"/.ssh.bak-* 2>/dev/null | head -1)
+ if (( _already )) && [[ -n "$_prev" ]]; then
+ BACKUP_DIR="$_prev"
+ info "Selected keys already in the vault — reusing backup $BACKUP_DIR (no new copy)."
+ else
+ BACKUP_DIR="$HOME/.ssh.bak-$(date +%Y%m%d-%H%M%S)"
  # 2>/dev/null: ~/.ssh often holds agent sockets that cp can't copy — the warning would
  # break the tree, and we don't need the sockets in the backup anyway (keys still copy).
  cp -R "$HOME/.ssh" "$BACKUP_DIR" 2>/dev/null
  chmod -R go-rwx "$BACKUP_DIR"
  success "Backed up ~/.ssh/ → $BACKUP_DIR"
+ fi
 
  local entries_for_json=""
  local key name entry key_type _up newkey

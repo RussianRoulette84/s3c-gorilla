@@ -287,6 +287,9 @@ Usage:
 """
 
 let args = CommandLine.arguments
+// No core dumps — never leak master-password / key material on crash (#23). Mirrors both agents.
+var coreLimit = rlimit(rlim_cur: 0, rlim_max: 0)
+setrlimit(RLIMIT_CORE, &coreLimit)
 if args.count < 2 {
     fputs(usage + "\n", stderr)
     exit(1)
@@ -310,10 +313,21 @@ case "master-prompt":
     let label = args.count >= 3 ? args[2] : "master password"
     EnableSecureEventInput()
     defer { DisableSecureEventInput() }
+    // #18: a crash/kill between Enable and the defer would leave secure event input stuck
+    // system-wide (keyboard dead in other apps until logout). Install async-signal-safe handlers
+    // that release it, restore default disposition, and re-raise. Only DisableSecureEventInput /
+    // signal / raise / _exit / alarm are called inside — all async-signal-safe. SIGALRM backstops
+    // a getpass() that blocks forever on an orphaned tty.
+    for s in [SIGINT, SIGTERM, SIGSEGV, SIGBUS, SIGABRT, SIGPIPE] as [Int32] {
+        signal(s) { sig in DisableSecureEventInput(); signal(sig, SIG_DFL); raise(sig) }
+    }
+    signal(SIGALRM) { _ in DisableSecureEventInput(); _exit(1) }
+    alarm(120)
     if !IsSecureEventInputEnabled() {
         fputs("warning: secure keyboard entry could not be engaged — typing is NOT shielded\n", stderr)   // #8 no false sense of safety
     }
     guard let c = getpass("🔐 KeePass \(label): ") else { exit(1) }
+    alarm(0)   // success — disarm the SIGALRM backstop
     print(String(cString: c))
     var i = 0; while c[i] != 0 { c[i] = 0; i += 1 }   // zero getpass's static buffer (#15)
 
