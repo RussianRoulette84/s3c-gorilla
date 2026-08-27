@@ -37,13 +37,12 @@ success "colorize.sh → $SHARE_DIR/colorize.sh"
 # it builds (ad-hoc signed) on any Mac including Intel / Hackintosh.
 if command -v swiftc &>/dev/null; then
  info "Compiling s3c-session-agent..."
- SESS_SRC="$BUILD_DIR/s3c-session-agent.swift"
  SESS_BIN="$BUILD_DIR/s3c-session-agent"
- cp "$SRC_DIR/s3c-session-agent.swift" "$SESS_SRC"
- cp "$SRC_DIR/ssh-agent-core.swift" "$BUILD_DIR/ssh-agent-core.swift"   # ssh protocol (B3)
- cp "$SRC_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-wire.swift"               # shared wire helpers (#13)
- cp "$SRC_DIR/ssh-rsa.swift" "$BUILD_DIR/ssh-rsa.swift"                 # shared RSA signing (#RSA)
- if swiftc "$SESS_SRC" "$BUILD_DIR/ssh-agent-core.swift" "$BUILD_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-rsa.swift" $(swift_frameworks s3c-session-agent) -o "$SESS_BIN" 2>/dev/null; then
+ # Source list comes from swift-targets.sh (the one place that knows the file split) so the
+ # installer can't drift from build-swift.sh again — that drift is exactly what left the
+ # session agent uncompilable when this file was split.
+ SESS_SRCS=""; for _s in $(swift_sources s3c-session-agent); do SESS_SRCS="$SESS_SRCS $SRC_DIR/$_s"; done
+ if swiftc $SESS_SRCS $(swift_frameworks s3c-session-agent) -o "$SESS_BIN" 2>/dev/null; then
  sign_binary "$SESS_BIN" || true
  sudo install -m 0555 -o root -g wheel "$SESS_BIN" "$BIN_DIR/s3c-session-agent"
  sudo xattr -cr "$BIN_DIR/s3c-session-agent" 2>/dev/null || true

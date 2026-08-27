@@ -25,7 +25,7 @@ show_godfather() {
     case "$kind" in
         root|sudo)
             line1='"I have an offer you can'"'"'t refuse..."'
-            line2='      your root password, please.'
+            line2='     but first your root password, please.'
             ;;
         *)
             line1='"I have an offer you can'"'"'t refuse..."'

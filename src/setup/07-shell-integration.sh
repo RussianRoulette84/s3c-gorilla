@@ -10,10 +10,7 @@ if grep -qF "$SSH_GORILLA_LINE" "$HOME/.zprofile" 2>/dev/null \
  && { ! $HAS_TOUCHID || grep -qF "$SSH_AUTH_SOCK_LINE" "$HOME/.zprofile" 2>/dev/null; }; then
  success "Shell integration already in .zprofile"
 else
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Add ssh-gorilla wrapper to .zprofile? [Y/n] " -n 1 -r
- [[ -n "$REPLY" ]] && echo ""   # Enter already emits its own newline
- if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
+ if confirm "Add ssh-gorilla wrapper to .zprofile?" y; then
  grep -qF "$SSH_GORILLA_LINE" "$HOME/.zprofile" 2>/dev/null || {
  echo "" >> "$HOME/.zprofile"
  echo "# s3c-gorilla: ssh wrapper (vault-backed keys; user comes from ~/.ssh/config)" >> "$HOME/.zprofile"

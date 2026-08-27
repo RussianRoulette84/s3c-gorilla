@@ -24,10 +24,8 @@ _import_ssh_keys() {
  for i in "${!KEYS[@]}"; do
  printf "%b%s%b   %d) %s\n" "$C7" "$TREE_MID" "$RESET" $((i+1)) "$(basename "${KEYS[$i]}")"
  done
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
  local sel
- read -p "Import which? [comma-sep, 'a'=all, 's'=skip, Enter=1]: " sel
- sel="${sel:-1}"
+ ask_line "Import which? [comma-sep, 'a'=all, 's'=skip, Enter=1]:" sel 1
  local -a SELECTED=()
  if [[ "$sel" == "s" ]]; then
  skip "SSH key import skipped"; return 0
@@ -85,8 +83,8 @@ _import_ssh_keys() {
  # import THAT instead; you then ssh-copy-id its pubkey (printed at the end) to each server.
  if [[ "$(awk '{print $1}' "${key}.pub" 2>/dev/null)" == "ssh-rsa" ]]; then
  warn "'$name' is an RSA key. It works as-is (the agent signs RSA), but Ed25519 is smaller + faster."
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Keep RSA (k) or upgrade to a new Ed25519 (u)? [k/u, Enter=k] " _up
+ local _up
+ ask_line "Keep RSA (k) or upgrade to a new Ed25519 (u)? [k/u, Enter=k]" _up k
  if [[ "$_up" =~ ^[Uu]$ ]]; then
  newkey="$HOME/.ssh/id_s3c_ed25519"
  [[ -e "$newkey" ]] && newkey="$HOME/.ssh/id_s3c_ed25519_$(date +%s)"
@@ -103,9 +101,7 @@ _import_ssh_keys() {
  # Strip passphrase if any
  if ! ssh-keygen -y -P '' -f "$key" &>/dev/null; then
  warn "Key '$name' has a passphrase — strip it now (kdbx is the new guard)?"
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Strip? [Y/n] " REPLY
- if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
+ if confirm "Strip?" y; then
  # >/dev/null hides ssh-keygen's "Your identification has been saved" chatter; the
  # interactive "Enter old passphrase:" still shows (it has to — you type into it).
  ssh-keygen -p -N '' -f "$key" >/dev/null || { error "wrong passphrase"; unset GORILLA_PW; return 1; }
@@ -129,9 +125,7 @@ _import_ssh_keys() {
  chmod 600 "$KEYS_JSON"
  success "Registry: $KEYS_JSON (mode: $json_mode)"
 
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Delete plaintext private keys from ~/.ssh/? Backup at $BACKUP_DIR [y/N] " REPLY
- if [[ $REPLY =~ ^[Yy]$ ]]; then
+ if confirm "Delete plaintext private keys from ~/.ssh/? Backup at $BACKUP_DIR" n; then
  for key in "${SELECTED[@]}"; do
  trash "$key" &>/dev/null || mv "$key" "$HOME/.ssh/.$(basename "$key").removed.$(date +%s)"
  done

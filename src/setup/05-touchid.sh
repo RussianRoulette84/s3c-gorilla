@@ -30,10 +30,7 @@ fi
 
 if $TOUCHID_DETECTED; then
  success "Touch ID hardware detected"
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Enable Touch ID mode? [Y/n] " -n 1 -r
- [[ -n "$REPLY" ]] && echo ""   # Enter already emits its own newline
- if [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]]; then
+ if confirm "Enable Touch ID mode?" y; then
  HAS_TOUCHID=true
  else
  skip "Touch ID mode opted out — tools will prompt for master password"
@@ -67,7 +64,10 @@ if $HAS_TOUCHID; then
  if [[ ${#IDENT_LINES[@]} -eq 0 ]]; then
  warn "No codesigning identities found — falling back to ad-hoc"
  else
- item "Codesigning identities:"
+ # The whole menu goes to stderr — same stream as `read -p`'s prompt. install.sh pipes stdout
+ # through `tee`, which block-buffers it, so a stdout menu flushes AFTER the prompt and the
+ # options end up printed below "Pick identity:" (the bug: "0) ad-hoc" landing under the prompt).
+ item "Codesigning identities:" >&2
  DEFAULT_CHOICE=0
  for i in "${!IDENT_LINES[@]}"; do
  ln="${IDENT_LINES[$i]}"
@@ -78,16 +78,13 @@ if $HAS_TOUCHID; then
  star=" [recommended — only cert type that works for CLI binaries]"
  [[ $DEFAULT_CHOICE -eq 0 ]] && DEFAULT_CHOICE=$((i+1))
  fi
- printf "%b%s%b %d) %s%s\n" "$C7" "$TREE_MID" "$RESET" $((i+1)) "$name" "$star"
+ printf "%b%s%b %d) %s%s\n" "$C7" "$TREE_MID" "$RESET" $((i+1)) "$name" "$star" >&2
  done
- printf "%b%s%b 0) ad-hoc (no Developer identity — SE features will be unreliable)\n" "$C7" "$TREE_MID" "$RESET"
+ printf "%b%s%b 0) ad-hoc (no Developer identity — SE features will be unreliable)\n" "$C7" "$TREE_MID" "$RESET" >&2
  if [[ $DEFAULT_CHOICE -gt 0 ]]; then
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Pick identity [1-${#IDENT_LINES[@]}, 0=ad-hoc, Enter=$DEFAULT_CHOICE]: " CHOICE
- CHOICE="${CHOICE:-$DEFAULT_CHOICE}"
+ ask_line "Pick identity [1-${#IDENT_LINES[@]}, 0=ad-hoc, Enter=$DEFAULT_CHOICE]:" CHOICE "$DEFAULT_CHOICE"
  else
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Pick identity [1-${#IDENT_LINES[@]}, 0=ad-hoc]: " CHOICE
+ ask_line "Pick identity [1-${#IDENT_LINES[@]}, 0=ad-hoc]:" CHOICE
  fi
  if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [[ "$CHOICE" -ge 1 ]] && [[ "$CHOICE" -le ${#IDENT_LINES[@]} ]]; then
  SIGN_IDENTITY=$(echo "${IDENT_LINES[$((CHOICE-1))]}" | awk '{print $2}')
@@ -123,12 +120,11 @@ if $HAS_TOUCHID; then
  # no keychain-access-groups required).
  # -----------------------------------------------------------------------
  info "Compiling s3c-ssh-agent..."
- AGENT_SRC="$BUILD_DIR/s3c-ssh-agent.swift"
  AGENT_BIN="$BUILD_DIR/s3c-ssh-agent"
- cp "$SRC_DIR/s3c-ssh-agent.swift" "$AGENT_SRC"
- cp "$SRC_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-wire.swift"   # shared wire helpers (#13)
- cp "$SRC_DIR/ssh-rsa.swift" "$BUILD_DIR/ssh-rsa.swift"     # shared RSA signing (#RSA)
- swiftc "$AGENT_SRC" "$BUILD_DIR/ssh-wire.swift" "$BUILD_DIR/ssh-rsa.swift" -o "$AGENT_BIN" $(swift_frameworks s3c-ssh-agent)
+ # Source list from swift-targets.sh (the one place that knows the file split), so the installer
+ # can't fall behind build-swift.sh when this file is split.
+ AGENT_SRCS=""; for _s in $(swift_sources s3c-ssh-agent); do AGENT_SRCS="$AGENT_SRCS $SRC_DIR/$_s"; done
+ swiftc $AGENT_SRCS -o "$AGENT_BIN" $(swift_frameworks s3c-ssh-agent)
  if [[ -n "$SIGN_IDENTITY" ]]; then
  if sign_binary "$AGENT_BIN" "$SIGN_IDENTITY"; then
  success "Signed s3c-ssh-agent with: $SIGN_IDENTITY"
@@ -175,9 +171,7 @@ if ! $HAS_TOUCHID; then
  item "Session-unlock — hold the master password in a memory-only, per-terminal"
  item "agent so env/otp stop re-prompting within the same tab. Obfuscated +"
  item "mlock'd, never on disk; wiped on TTL / logout / screen-lock / reboot."
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Keep unlocked for the current terminal session? [Y/n] " REPLY
- [[ -z "$REPLY" || $REPLY =~ ^[Yy]$ ]] && SESSION_UNLOCK=true
+ confirm "Keep unlocked for the current terminal session?" y && SESSION_UNLOCK=true
 fi
 set_config GORILLA_SESSION_UNLOCK "$SESSION_UNLOCK"
 if $HAS_TOUCHID; then skip "Session-unlock: off (chip mode uses the per-sign Touch ID gate)"

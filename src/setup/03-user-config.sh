@@ -5,9 +5,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
  # A config already exists — keep the user's settings by default, but let them
  # reset to a fresh config.example if they want.
  if [[ -f "$CONFIG_EXAMPLE" ]]; then
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Existing config found. Keep it? [Y/n] " _cfg
- if [[ -z "$_cfg" || "$_cfg" =~ ^[Yy]$ ]]; then
+ if confirm "Existing config found. Keep it?" y; then
  success "Preserved existing: $CONFIG_FILE"
  else
  cp "$CONFIG_EXAMPLE" "$CONFIG_FILE"

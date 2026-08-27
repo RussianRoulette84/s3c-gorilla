@@ -57,6 +57,35 @@ item() { style_item "$1"; }
 # Skipped-step line (neutral dim, purple prefix).
 skip() { printf "%b%s %b[SKIP]%b %s\n" "$C7" "$TREE_MID" "$DIM" "$RESET" "$1" >&2; }
 
+# Prompt helpers — every interactive read draws the │ tree prefix so questions stay part of the
+# wizard tree. Raw `read -p` printed bare, prefix-less lines (and `-n 1` reads left the cursor
+# mid-line so the next section's │ collided with the prompt). Both write the prompt to stderr —
+# the same stream `read` uses — so tee's block-buffering of stdout can't reorder them. They honor
+# INSTALL_AUTO_YES (take the default, no blocking) for unattended installs.
+
+# confirm "Question" [y|n]  — returns 0 = yes, 1 = no. Default shown as [Y/n] / [y/N].
+confirm() {
+ local def="${2:-y}" hint ans
+ [[ "$def" == [Yy] ]] && hint="[Y/n]" || hint="[y/N]"
+ if [[ -n "${INSTALL_AUTO_YES:-}" ]]; then
+ printf "%b%s %s %s%b %s\n" "$C7" "$TREE_MID" "$1" "$hint" "$RESET" "$def" >&2
+ [[ "$def" == [Yy] ]]; return
+ fi
+ printf "%b%s %s %s%b " "$C7" "$TREE_MID" "$1" "$hint" "$RESET" >&2
+ read -r ans
+ ans="${ans:-$def}"
+ [[ "$ans" == [Yy]* ]]
+}
+
+# ask_line "Prompt" <varname> [default]  — read a free-text answer into <varname>, tree-prefixed.
+ask_line() {
+ local __var="$2" def="${3:-}" ans
+ printf "%b%s %s%b " "$C7" "$TREE_MID" "$1" "$RESET" >&2
+ if [[ -n "${INSTALL_AUTO_YES:-}" ]]; then ans="$def"; printf "%s\n" "$ans" >&2
+ else read -r ans; ans="${ans:-$def}"; fi
+ printf -v "$__var" '%s' "$ans"
+}
+
 # spin_until <pid> <message> — bouncing wheel while a slow background step runs, so the installer
 # never looks dead. Drawn straight to /dev/tty (install.sh pipes stdout through tee, so `-t 1` is
 # false and the carriage returns would otherwise trash the log). Best-effort: never fails a step.

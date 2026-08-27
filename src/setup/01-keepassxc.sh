@@ -9,9 +9,7 @@ else
  warn "KeePassXC not found on this Mac."
  item "Download the official macOS app (.dmg):  https://keepassxc.org/download"
  if command -v brew &>/dev/null; then
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Install KeePassXC now via Homebrew? [Y/n] " _kp
- if [[ -z "$_kp" || "$_kp" =~ ^[Yy]$ ]]; then
+ if confirm "Install KeePassXC now via Homebrew?" y; then
  brew install --cask keepassxc && success "KeePassXC installed" \
  || { error "Homebrew install failed — grab the .dmg from the link above, then re-run."; exit 1; }
  else

@@ -8,15 +8,30 @@ extension UnlockController {
     // Validate the master password against the kdbx so we can react in-window (shake / D'oh) instead
     // of exiting blind. Fail-OPEN if keepassxc-cli is missing — the agent re-validates anyway.
     func validate(_ pw: String) -> Bool {
+        // GORILLA_UNLOCK_DEBUG=1 → log to stderr what we captured + keepassxc's real error, so a
+        // "correct password rejected" bug can be diagnosed without printing the password itself.
+        let debug = ProcessInfo.processInfo.environment["GORILLA_UNLOCK_DEBUG"] == "1"
+        let cli = keepassxcCLI(), db = dbPath()
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: keepassxcCLI())
-        proc.arguments = ["ls", "-q", dbPath()]
+        proc.executableURL = URL(fileURLWithPath: cli)
+        proc.arguments = ["ls", "-q", db]
         let inp = Pipe(); proc.standardInput = inp
-        proc.standardOutput = FileHandle.nullDevice; proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return true }
+        proc.standardOutput = FileHandle.nullDevice
+        let errPipe = debug ? Pipe() : nil
+        proc.standardError = errPipe?.fileHandleForWriting ?? FileHandle.nullDevice
+        do { try proc.run() } catch {
+            if debug { FileHandle.standardError.write("unlock-debug: could not run \(cli): \(error)\n".data(using: .utf8)!) }
+            return true
+        }
         inp.fileHandleForWriting.write((pw + "\n").data(using: .utf8)!)
         try? inp.fileHandleForWriting.close()
+        var errText = ""
+        if let e = errPipe { errText = String(data: e.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "" }
         proc.waitUntilExit()
+        if debug {
+            let msg = "unlock-debug: cli=\(cli) db=\(db) capturedChars=\(pw.count) exit=\(proc.terminationStatus) err=\(errText.trimmingCharacters(in: .whitespacesAndNewlines))\n"
+            FileHandle.standardError.write(msg.data(using: .utf8)!)
+        }
         return proc.terminationStatus == 0
     }
     func keepassxcCLI() -> String {

@@ -5,15 +5,11 @@ item "Infisical is an open-source secrets manager: a server that stores your app
 item "hands them to your services over an authenticated API. s3c-gorilla can SYNC each project's"
 item ".env with an Infisical project — push local → server, pull server → local, or reconcile both."
 item "Learn more: https://infisical.com"
-printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
-read -rp "Enable Infisical secret sync? [y/N] " _inf
-if [[ "$_inf" =~ ^[Yy]$ ]]; then
+if confirm "Enable Infisical secret sync?" n; then
  if command -v infisical &>/dev/null; then
  success "Infisical CLI present: $(infisical --version 2>/dev/null | head -1)"
  elif command -v brew &>/dev/null; then
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -rp "Infisical CLI not found — install it now via Homebrew? [Y/n] " _ib
- if [[ -z "$_ib" || "$_ib" =~ ^[Yy]$ ]]; then
+ if confirm "Infisical CLI not found — install it now via Homebrew?" y; then
  brew install infisical/get-cli/infisical && success "Infisical CLI installed" \
  || warn "Homebrew install failed — get it from https://infisical.com/docs/cli/overview"
  fi

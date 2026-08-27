@@ -31,10 +31,8 @@ install_ssh_step() {
  item "     Per-Mac setup (chip keys don't roam)."
  item ""
 
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
  local mode_choice
- read -p "Which mode? [1/2, Enter=1]: " mode_choice
- mode_choice="${mode_choice:-1}"
+ ask_line "Which mode? [1/2, Enter=1]:" mode_choice 1
 
  local GORILLA_SSH_MODE
  if [[ "$mode_choice" == "2" ]]; then
@@ -65,8 +63,7 @@ install_ssh_step() {
  echo ""
  warn "Copy the line above to authorized_keys on every server you want to ssh into."
  warn "Example: ssh-copy-id -i ~/.ssh/id_s3c-gorilla.pub user@host"
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
- read -p "Press Enter once you've pushed the public key to your servers... " _
+ ask_line "Press Enter once you've pushed the public key to your servers..." _
 
  # Write keys.json registry
  cat > "$KEYS_JSON" <<EOF
@@ -130,9 +127,8 @@ EOF
  fi
  fi
 
- printf "%b%s %b" "$C7" "$TREE_MID" "$RESET"
  local test_host
- read -p "Test a real SSH host? (hostname or Enter=skip): " test_host
+ ask_line "Test a real SSH host? (hostname or Enter=skip):" test_host
  if [[ -n "$test_host" ]]; then
  local host_arg="$test_host"
  # user comes from ~/.ssh/config (a trailing `Host *` with `User root` is the usual setup)
@@ -141,10 +137,12 @@ EOF
  # Capture ssh's OWN exit status — piping into `tail` would make the `if`
  # test tail's status (always 0) and falsely report success on auth failure.
  local ssh_out ssh_rc
+ # Capture rc INLINE (&&/||) — a bare `run_spinner …` then `ssh_rc=$?` would let `set -e` abort
+ # the whole installer the instant the test host fails, exiting silently before the warn below.
  SSH_AUTH_SOCK="$AGENT_DIR/agent.sock" \
  run_spinner "Connecting to $test_host — unlock window may appear (watch other Spaces)…" \
- ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit
- ssh_rc=$?
+ ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$host_arg" exit \
+ && ssh_rc=0 || ssh_rc=$?
  ssh_out="$(cat "$SPINNER_OUT" 2>/dev/null)"
  trash "$SPINNER_OUT" 2>/dev/null || true
  printf '%s\n' "$ssh_out" | tail -5
